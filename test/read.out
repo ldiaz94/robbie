@@ -1,0 +1,154 @@
+--- Robfile
+ 1| cc   =   gcc
+ 2| flags=-O2
+ 3| empty =
+ 4| flags = -g
+ 5| path = /bin:/usr/bin
+ 6| list = a \
+ 7|        b	\
+ 8|    c
+ 9| # not continued \
+10| last = x
+$ robbie -p
+cc = gcc
+flags = -g
+empty =
+path = /bin:/usr/bin
+list = a b c
+last = x
+exit 0
+$ robbie -p cc=clang new=x flags=-O0 -g empty=
+cc = clang
+new = x
+flags = -O0 -g
+empty =
+path = /bin:/usr/bin
+list = a b c
+last = x
+exit 0
+$ robbie -p cc=a cc=b
+cc = b
+flags = -g
+empty =
+path = /bin:/usr/bin
+list = a b c
+last = x
+exit 0
+--- Robfile
+ 1| # The top of the file.
+ 2| 
+ 3| # Not a description: a blank line follows.
+ 4| 
+ 5| # The first line of two.
+ 6| #The description.
+ 7| all: prog \
+ 8|      doc
+ 9| 	echo tab
+10|     echo spaces \
+11|         continued
+12|     # a comment for the shell
+13| # a comment at the margin, above nothing
+14| x = 1
+15| # above a variable, so not a description
+16| y = 2
+17| prog: a.c
+18|     cc -o prog a.c
+19| 
+20| #
+21| doc:
+$ robbie -p
+x = 1
+y = 2
+
+# The description.
+all: prog doc
+    echo tab
+        echo spaces \
+        continued
+        # a comment for the shell
+
+prog: a.c
+    cc -o prog a.c
+
+doc:
+exit 0
+$ robbie -p -C examples/robbie
+raz = raz -Werror
+prefix = /usr/local
+pages = doc/robbie.1 doc/robfile.5
+
+# The program itself.
+build/robbie: src/*.raz
+    mkdir -p build
+    {raz} -o {target} src/Robbie.raz
+
+# A release tarball.
+robbie.tar.gz: build/robbie doc/robbie.1 doc/robfile.5 README.md
+    tar czf {target} {inputs}
+
+# Run the tests, then check the man pages.
+task test: build/robbie
+    for t in test/*.sh; do
+        sh "$t" | diff -u "${t%.sh}.out" - || exit 1
+    done
+    # groff exits 0 even when it warns, so any output is a failure
+    out=$(groff -mdoc -ww -z {pages} 2>&1)
+    test -z "$out" || { echo "$out"; exit 1; }
+
+# Install into /usr/local.
+task install: build/robbie
+    install -Dm755 build/robbie "$DESTDIR{prefix}/bin/robbie"
+    install -Dm644 doc/robbie.1 "$DESTDIR{prefix}/share/man/man1/robbie.1"
+    install -Dm644 doc/robfile.5 "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove what install put there.
+task uninstall:
+    rm -f "$DESTDIR{prefix}/bin/robbie" \
+          "$DESTDIR{prefix}/share/man/man1/robbie.1" \
+          "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove everything the build made.
+task clean:
+    rm -rf build robbie.tar.gz
+exit 0
+--- Robfile
+ 1| x = 1
+ 2|     echo hi
+$ robbie -p
+robbie: Robfile:2: indented line with no rule above it
+exit 2
+--- Robfile
+ 1| a = 1 \
+ 2|     2
+ 3| oops
+$ robbie -p
+robbie: Robfile:3: expected 'name = value', 'target: inputs' or 'include file'
+exit 2
+--- Robfile
+ 1| # fine
+ 2| my-var = 1
+$ robbie -p
+robbie: Robfile:2: 'my-var' is not a variable name
+exit 2
+--- Robfile
+ 1| = 1
+$ robbie -p
+robbie: Robfile:1: '' is not a variable name
+exit 2
+$ robbie -f nothere
+robbie: cannot read nothere: no such file or directory
+exit 2
+$ robbie -f .
+robbie: cannot read .: is a directory
+exit 2
+$ robbie -C nothere
+robbie: cannot change to nothere: no such file or directory
+exit 2
+$ robbie a.b=c
+robbie: 'a.b' is not a variable name
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie =x
+robbie: '' is not a variable name
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2

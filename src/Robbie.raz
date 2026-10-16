@@ -1,0 +1,250 @@
+(* robbie: a small build tool and job runner. It reads a Robfile, shows
+   what can be done in a repository, and makes what is out of date.
+
+   This is the main module, and it stays small: it reads the command
+   line, finds the robfile, hands the work to the other modules and
+   turns the outcome into an exit status. The modules it brings together
+   are, from the bottom up: Rbase for text and messages, Rsig to tell an
+   ignored signal, Rexpand for the variables and placeholders, Rread for
+   the robfile, Rgraph for what is out of date, Rterm for the terminal,
+   Rjob for running recipes, and Rshow for the listing and the
+   interactive mode.
+
+   It reads the command line and the robfile, and with -p prints what
+   it read; otherwise it builds the graph, which checks it for loops,
+   checks every recipe for unknown placeholders, looks up the targets
+   named, decides what they need made, and makes it, or with -n prints
+   what would be run. With no target named it shows the listing
+   instead, and with -i the interactive mode.
+
+   The flags are read the way getopt(3) reads them, so they can be
+   bundled (-kn), and a flag's value can be glued on (-j4, -Cdir) or be
+   the next word (-j 4). The first word that isn't a flag ends the
+   flags, and so does '--'; the words after that are operands. Those of
+   the form name=value set variables before the robfile is read, fixing
+   them so the robfile can't change them; the rest are targets, looked
+   up once the graph is built. Anything wrong on the command line is
+   reported with the usage line, and robbie exits 2, the status for
+   "robbie was used wrongly". The library's Opt reads a command line by
+   the same rules, but words its help and its mistakes its own way;
+   robbie keeps its own, which its manual and its tests show. *)
+module Robbie;
+import Sys, Rt, Out, Str, Files, Rbase, Rexpand, Rread, Rgraph, Rterm, Rjob, Rshow;
+
+const
+    (* the one-line summary printed after every usage error *)
+    UsageLine = "usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]";
+    (* the most recipes -j lets run at once: far more than any machine
+       needs; the message of jobCount spells it out, so change both
+       together *)
+    MaxJobs = 1000;
+
+var
+    interactive: BOOL;  (* -i: pick a target from the listing and run it *)
+    keepGoing: BOOL;    (* -k: after an error, make whatever doesn't depend on it *)
+    dryRun: BOOL;       (* -n: print the recipes instead of running them *)
+    printOnly: BOOL;    (* -p: print the rules and variables as they were read *)
+    quiet: BOOL;        (* -q: don't echo recipe lines *)
+    dir: []U8;          (* -C: the directory to change to first; "" to stay put *)
+    robfile: []U8;      (* -f: the robfile to read, relative to dir *)
+    jobs: INT;          (* -j: how many recipes may run at once *)
+    (* the first operand, as an argument number; ARGC() when there are
+       none *)
+    firstOperand: INT;
+
+(* Reports a mistake on the command line, followed by the usage line,
+   and exits with ExitUsage. *)
+proc usage(parts: [][]U8);
+begin
+    Rbase.report(Rbase.Nowhere, parts);
+    Rbase.err(UsageLine);
+    Rbase.err("\n");
+    Rt.exit(Rbase.ExitUsage);
+end;
+
+(* Prints the usage line on standard output, as -h and --help ask, and
+   exits with 0. *)
+proc showUsage;
+begin
+    Out.str(UsageLine);
+    Out.ln;
+    Rt.exit(0);
+end;
+
+(* The value of the flag letter flag in arg, whose letter sits just
+   before byte k: the rest of arg when there is any, and otherwise the
+   next argument, number next. Moves k past the end of arg, and next
+   past the argument when it was used. A flag with nothing after it is
+   a usage error. *)
+proc flagValue(arg: []U8; var k, next: INT; flag: U8): []U8;
+var value: []U8;
+begin
+    if k < LEN(arg) then
+        value := arg[k..LEN(arg)];
+    elsif next < ARGC() then
+        value := Files.arg(next);
+        INC(next);
+    else
+        usage(["-", [flag], " needs a value"]);
+    end;
+    k := LEN(arg);
+    return value;
+end;
+
+(* The number of jobs s, the value of -j, asks for. Only plain digits
+   are taken, and the number must lie between 1 and MaxJobs; anything
+   else is a usage error. *)
+proc jobCount(s: []U8): INT;
+var n: I64; i: INT; ok: BOOL;
+begin
+    ok := LEN(s) > 0;
+    for i := 0 to LEN(s) - 1 do
+        if not Str.isDigit(s[i]) then ok := false; end;
+    end;
+    if ok then n, ok := Str.toInt(s); end;
+    if not ok or (n < 1) or (n > MaxJobs) then
+        usage(["-j wants a number from 1 to 1000, not '", s, "'"]);
+    end;
+    return INT(n);
+end;
+
+(* Reads the flags into the variables above, and sets firstOperand to
+   the first argument that isn't a flag. Exits through usage on an
+   unknown flag, a missing value or a bad -j, and through showUsage on
+   -h or --help. *)
+proc readFlags;
+var arg: []U8; i, k: INT; c: U8;
+begin
+    robfile := "Robfile";
+    jobs := 1;
+    i := 1;
+    while i < ARGC() do
+        arg := Files.arg(i);
+        (* a lone '-' is an operand, as it is to getopt(3) *)
+        if (LEN(arg) < 2) or (arg[0] # '-') then break; end;
+        INC(i);
+        if arg = "--" then break; end;
+        if arg = "--help" then showUsage; end;
+        (* every letter after the '-' is a flag, until one takes a value *)
+        k := 1;
+        while k < LEN(arg) do
+            c := arg[k];
+            INC(k);
+            match c of
+            | 'i': interactive := true;
+            | 'k': keepGoing := true;
+            | 'n': dryRun := true;
+            | 'p': printOnly := true;
+            | 'q': quiet := true;
+            | 'h': showUsage;
+            | 'C': dir := flagValue(arg, k, i, c);
+            | 'f': robfile := flagValue(arg, k, i, c);
+            | 'j': jobs := jobCount(flagValue(arg, k, i, c));
+            | else: usage(["unknown flag -", [c]]);
+            end;
+        end;
+    end;
+    firstOperand := i;
+end;
+
+(* Sets a fixed variable for every operand of the form name=value. The
+   name is what comes before the first '=', and must be a name; the
+   value is everything after it, blanks included, since the shell has
+   already had its say about quoting, and braces too: the value is used
+   as it is, not expanded. A bad name, or one of robbie's own
+   placeholders, is a usage error. Each also goes into the environment,
+   so a recipe sees it as $name too, as a recipe run by make would: that
+   keeps 'robbie install DESTDIR=pkg' and 'DESTDIR=pkg robbie install'
+   alike. *)
+proc readOverrides;
+var name, value: []U8; i: INT; isSet: BOOL;
+begin
+    for i := firstOperand to ARGC() - 1 do
+        name, value, isSet := Str.cut(Files.arg(i), "=");
+        if not isSet then continue; end;
+        if not Rbase.isName(name) then usage(["'", name, "' is not a variable name"]); end;
+        if Rexpand.isOwnPlaceholder(name) then
+            usage(["'", name, "' is robbie's own placeholder, not a variable name"]);
+        end;
+        Rexpand.setVar(name, value, true);
+        _ := Sys.setEnv(name, value);
+    end;
+end;
+
+(* Whether argument i, an operand, names a target: when it has no '=',
+   and so is not a name=value for readOverrides. *)
+proc isTarget(i: INT): BOOL;
+begin
+    return Str.find(Files.arg(i), "=") < 0;
+end;
+
+(* How many operands name a target. Unlike readTargets it looks nothing
+   up, so it can be asked before the robfile is read. *)
+proc targetCount: INT;
+var i, n: INT;
+begin
+    for i := firstOperand to ARGC() - 1 do
+        if isTarget(i) then INC(n); end;
+    end;
+    return n;
+end;
+
+(* Makes a goal of every operand that names a target, in the order
+   they were named, and returns how many there were. Needs the graph
+   built; a name no rule makes stops robbie. *)
+proc readTargets: INT;
+var i, n: INT;
+begin
+    for i := firstOperand to ARGC() - 1 do
+        if isTarget(i) then
+            Rgraph.want(Files.arg(i));
+            INC(n);
+        end;
+    end;
+    return n;
+end;
+
+proc main*: INT;
+var status, e: INT;
+begin
+    Rterm.setup;
+    readFlags;
+    (* before the robfile, so the operands' values are fixed when it
+       tries to set the same names *)
+    readOverrides;
+    if interactive and (targetCount() > 0) then
+        usage(["-i takes no target; pick one from the list"]);
+    end;
+    if LEN(dir) > 0 then
+        e := Sys.setWorkDir(dir);
+        if e # 0 then Rbase.fatal(Rbase.Nowhere, ["cannot change to ", dir, ": ", Rbase.reason(e)]); end;
+    end;
+    Rread.readRobfile(robfile);
+    if printOnly then
+        Rread.printRead;
+        return 0;
+    end;
+    Rgraph.buildGraph;
+    (* every recipe, not just the ones about to run, so a mistake is
+       caught before anything has been made *)
+    Rjob.checkRecipes;
+    if interactive then
+        if not Rterm.isTerminal() then Rbase.fatal(Rbase.Nowhere, ["-i needs a terminal"]); end;
+        Rgraph.survey;
+        Rshow.interact(robfile, dryRun, quiet, keepGoing, jobs);
+        return 0;
+    end;
+    (* no target: the listing, of what can be made and what is stale *)
+    if readTargets() = 0 then
+        Rgraph.survey;
+        Rshow.showListing(robfile);
+        return 0;
+    end;
+    Rgraph.judge(keepGoing);
+    status := Rjob.makePlan(dryRun, quiet, keepGoing, jobs);
+    (* a missing input is the robfile's mistake, and outranks a failure *)
+    if Rgraph.missingInput then status := Rbase.ExitUsage; end;
+    return status;
+end;
+
+end Robbie.

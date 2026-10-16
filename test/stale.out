@@ -1,0 +1,89 @@
+--- Robfile
+ 1| prog: a.o b.o
+ 2|     link prog
+ 3| a.o: a.c common.h
+ 4|     compile a
+ 5| b.o: b.c common.h
+ 6|     compile b
+ 7| common.h: common.in
+ 8|     generate common.h
+ 9| 
+10| # a task with no recipe: always out of date, with nothing to show
+11| task all: prog
+12| 
+13| task test: prog
+14|     run tests
+15| stamp: stamp.in test
+16|     note the stamp
+# a.c b.c common.in at 2026-01-01 12:00
+$ robbie -n prog
+▸ common.h
+generate common.h
+▸ a.o
+compile a
+▸ b.o
+compile b
+▸ prog
+link prog
+exit 0
+# common.h at 2026-01-01 12:01
+# a.o b.o at 2026-01-01 12:02
+# prog at 2026-01-01 12:03
+$ robbie -n prog
+exit 0
+$ robbie -n all
+exit 0
+# stamp.in at 2026-01-01 12:00
+# stamp at 2026-01-01 12:05
+$ robbie -n test
+▸ test
+run tests
+exit 0
+$ robbie -n stamp
+▸ test
+run tests
+▸ stamp
+note the stamp
+exit 0
+# b.c at 2026-01-01 12:04
+$ robbie -n prog
+▸ b.o
+compile b
+▸ prog
+link prog
+exit 0
+# common.in at 2026-01-01 12:04
+$ robbie -n prog a.o prog
+▸ common.h
+generate common.h
+▸ a.o
+compile a
+▸ b.o
+compile b
+▸ prog
+link prog
+exit 0
+# common.h b.c common.in at 2026-01-01 12:04
+# a.o b.o at 2026-01-01 12:05
+# prog at 2026-01-01 12:06
+$ robbie -n prog
+▸ a.o
+compile a
+▸ prog
+link prog
+exit 0
+# a.o a.c at 2026-01-01 12:05:00.000000005
+$ robbie -n a.o
+exit 0
+# a.o at 2026-01-01 12:05:00.000000004
+$ robbie -n a.o
+▸ a.o
+compile a
+exit 0
+$ robbie -n prog
+robbie: Robfile:5: 'b.o' needs 'b.c', which does not exist, and no rule makes it
+exit 2
+$ robbie -n a.o
+▸ a.o
+compile a
+exit 0

@@ -1,0 +1,94 @@
+$ robbie 
+ robbie  ~/Robfile
+
+ tasks
+   test
+   install
+   -
+   -n
+exit 0
+$ robbie -i -k -n -p -q
+task test:
+
+task install:
+
+task -:
+
+task -n:
+exit 0
+$ robbie -iknpq
+task test:
+
+task install:
+
+task -:
+
+task -n:
+exit 0
+$ robbie -C dir -f file -j 4 cc=gcc test install
+done: nothing to do, in (time)
+exit 0
+$ robbie -Cdir -ffile -j4
+ robbie  ~/dir/file
+
+ tasks
+   test
+   install
+exit 0
+$ robbie -kj 4 test
+done: nothing to do, in (time)
+exit 0
+$ robbie -- -n
+done: nothing to do, in (time)
+exit 0
+$ robbie - -n
+done: nothing to do, in (time)
+exit 0
+$ robbie -x
+robbie: unknown flag -x
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -kx
+robbie: unknown flag -x
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j
+robbie: -j needs a value
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -C
+robbie: -C needs a value
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j 0
+robbie: -j wants a number from 1 to 1000, not '0'
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j 1001
+robbie: -j wants a number from 1 to 1000, not '1001'
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j 99999999999999999999
+robbie: -j wants a number from 1 to 1000, not '99999999999999999999'
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j 4x
+robbie: -j wants a number from 1 to 1000, not '4x'
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -j 
+robbie: -j wants a number from 1 to 1000, not ''
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -h
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 0
+$ robbie --help
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 0
+$ robbie -kh test
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 0
+$ robbie -C -h
+robbie: cannot change to -h: no such file or directory
+exit 2

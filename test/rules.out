@@ -1,0 +1,142 @@
+--- Robfile
+ 1| out = build
+ 2| docs = a.1 b.5
+ 3| 
+ 4| # Everything in {out}.
+ 5| {out}/prog: main.c {docs}
+ 6|     cc -o {target} {inputs}
+ 7| task   check  :   {out}/prog
+ 8| # A file called task.
+ 9| task:
+10| empty:
+$ robbie -p
+out = build
+docs = a.1 b.5
+
+# Everything in build.
+build/prog: main.c a.1 b.5
+    cc -o {target} {inputs}
+
+task check: build/prog
+
+# A file called task.
+task:
+
+empty:
+exit 0
+$ robbie -p out=bin
+out = bin
+docs = a.1 b.5
+
+# Everything in bin.
+bin/prog: main.c a.1 b.5
+    cc -o {target} {inputs}
+
+task check: bin/prog
+
+# A file called task.
+task:
+
+empty:
+exit 0
+--- Robfile
+ 1| task loop:
+ 2| 
+ 3| 	for f in *; do
+ 4| 		echo "$f"
+ 5| 
+ 6| 	done
+ 7| 		echo deeper than the first line
+ 8| 
+ 9| task heredoc:
+10|     cat <<END
+11|     one
+12| 
+13|     three
+14|     END
+15|     # a comment for the shell
+16| # a comment at the margin, dropped
+17| 
+18|     echo after the comment
+19| 
+20| task spaces:
+21|         echo eight
+22|     echo four
+23|         echo eight again
+$ robbie -p
+task loop:
+    for f in *; do
+    	echo "$f"
+
+    done
+    	echo deeper than the first line
+
+task heredoc:
+    cat <<END
+    one
+
+    three
+    END
+    # a comment for the shell
+
+    echo after the comment
+
+task spaces:
+    echo eight
+    echo four
+    echo eight again
+exit 0
+--- Robfile
+ 1| prog: a.c
+ 2|     cc a.c
+ 3| task prog:
+$ robbie -p
+robbie: Robfile:3: 'prog' already has a rule, at Robfile:1
+exit 2
+--- Robfile
+ 1| x = prog
+ 2| prog:
+ 3| {x}:
+$ robbie -p
+robbie: Robfile:3: 'prog' already has a rule, at Robfile:2
+exit 2
+--- Robfile
+ 1| none =
+ 2| {none}: a
+$ robbie -p
+robbie: Robfile:2: a rule needs a target before its colon
+exit 2
+--- Robfile
+ 1| : a
+$ robbie -p
+robbie: Robfile:1: a rule needs a target before its colon
+exit 2
+--- Robfile
+ 1| two = a b
+ 2| {two}: c
+$ robbie -p
+robbie: Robfile:2: a rule makes one target, not 'a b'
+exit 2
+--- Robfile
+ 1| a b: c
+$ robbie -p
+robbie: Robfile:1: a rule makes one target, not 'a b'
+exit 2
+--- Robfile
+ 1| prog: {target}.c
+$ robbie -p
+robbie: Robfile:1: {target} can only be used in a recipe
+exit 2
+--- Robfile
+ 1| prog: {srcs}
+$ robbie -p
+robbie: Robfile:1: unknown placeholder {srcs}; write {{ for a literal {
+exit 2
+--- Robfile
+ 1| prefix = /usr
+ 2| 
+ 3| # Install into {prefx}.
+ 4| task install:
+$ robbie -p
+robbie: Robfile:3: unknown placeholder {prefx}; did you mean {prefix}?
+exit 2

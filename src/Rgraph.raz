@@ -1,0 +1,568 @@
+(* Rgraph: what needs what.
+
+   Rread leaves a table of rules, each with its inputs as one string.
+   This module turns them into a graph that the rest of robbie can walk:
+   a node for every name a rule makes or needs, and an edge from each
+   target to each of its inputs. A name gets one node however often it
+   appears, so when two rules need the same file they share its node,
+   and a target that is also an input, like the program a task tests,
+   is one node with a rule and with edges coming in. Each node knows the
+   rule that makes it, if any; a node with none is a file that must
+   already be there, and judge checks that it is.
+
+   An input word with a '*' in it is a glob, which Rexpand turns,
+   through glob(3) from the C library, into the files it matches, in
+   the order of their names. Only '*' is special: '?', '[' and '\' are
+   escaped before glob(3) sees them, since they turn up in file names
+   more often than they would be wanted as wildcards, and one rule is
+   easier to remember than four. A glob that matches nothing is an
+   error, wherever it is in the robfile, since it is nearly always a
+   typo. A glob can only name files that exist; files still to be made
+   are named with a comprehension (Rexpand). Whether a name comes from
+   a glob or is written out, a node gets each input once, in the order
+   first named, so 'prog: main.c *.c' needs main.c once.
+
+   A rule whose target has a '*' in it is a pattern: it makes any name
+   that fits it, and the '*' in each of its inputs stands for the same
+   text, the stem. So '*.o: *.c' makes a.o from a.c. In a pattern's
+   inputs a '*' is the stem, never a glob. A pattern makes no node of
+   its own; instead, every node that no plain rule makes is matched
+   against the patterns, in the order of the file, and the first that
+   fits, and whose inputs all exist or can be made in turn, makes it. A
+   plain rule always wins over a pattern. Deciding whether an input can
+   be made may itself try patterns, so the search is recursive; a
+   pattern already being tried further up is not tried again, which
+   stops rules like '*.o: *.o.c' from chasing their own tails. Each node
+   a pattern gives inputs to is matched in turn, until every node has
+   been looked at, which is why the nodes are matched from a queue:
+   those not yet looked at are the nodes from matched on.
+
+   A graph with a loop in it can't be made, since each target in the
+   loop waits for the next. Looking for loops is a depth-first search
+   from every node in turn, keeping the path that led to the node being
+   looked at: an input already on that path closes a loop, and the path
+   from it onwards is the whole loop, which is what robbie reports, one
+   link to a line, each with the place of the rule that makes it. A
+   loop anywhere in the robfile is an error, as a rule defined twice is,
+   whether or not anything asked on the command line goes through it:
+   the listing and the marks of stale files walk the whole graph too.
+
+   The targets named on the command line are looked up, and become the
+   goals, the nodes that Rjob will make. Only a name some rule makes,
+   plain or pattern, can be a goal. A name only a pattern makes has no
+   node until it is named, so want adds it, and matches and checks what
+   that brings in as buildGraph does.
+
+   Finally, robbie decides what is out of date, walking from the goals
+   down to the files that must already be there and deciding each node
+   on the way back up, once its inputs are decided. A task is always out
+   of date. A file is out of date when it is missing, when it is older
+   than one of its inputs, or when one of its inputs is out of date
+   itself: that input is about to be made, or a task that always runs,
+   and either way it will be newer than the file afterwards. Times are
+   compared to the nanosecond, and a file exactly as old as its input is
+   up to date. What is out of date goes onto the plan in the order the
+   walk leaves it, so each node comes after everything it needs; that is
+   the order Rjob makes them in. Only what the goals need is looked at,
+   so a missing input is an error only when something asked for needs
+   it, and the error names the target that did. With -k that error
+   stops nothing: the missing file is marked broken, and so, when Rjob
+   comes to them, is everything that needs it, while the rest is made.
+
+   The listing wants to know what is out of date everywhere, not only
+   below the goals, and must not stop at a missing input; survey judges
+   every target for it, quietly. The interactive mode judges again after
+   each run, so forget clears every judgement first.
+
+   The nodes grow as patterns bring names in, which moves them, so a
+   pointer to one, from node, is good only until the next is added.
+
+   It uses Rbase for the messages, Rread for the rules, Rexpand for
+   stems, globs and 'did you mean', Sys to read the times of files, and
+   Map to find a node by its name. It changes nothing that Rread made. *)
+module Rgraph;
+import Sys, Str, Heap, Rbase, Rread, Rexpand;
+import Nodes := Vec(Node), Ints := Vec(INT), Flags := Vec(BOOL);
+import Names := Map([]U8, INT, Str.hash, Str.eq);
+
+const
+    (* the stamp of a file that is not there, or of a task: earlier than
+       any real file's *)
+    Missing* = -9223372036854775807 - 1;
+
+type
+    (* How far the search for loops has got with a node: not reached
+       yet, on the path being followed, or known to lead into no loop. *)
+    Search* = (unseen, onPath, clear);
+
+    (* A name robbie can make or needs: a target or an input. *)
+    Node* = record
+        name*: []U8;        (* the file or task *)
+        rule*: INT;         (* the index in Rread.allRules of the rule that makes it,
+                               plain or pattern; -1 when none does *)
+        stem*: []U8;        (* what the '*' of its rule stands for, when that rule is a
+                               pattern; "" otherwise *)
+        first*, count*: INT;   (* its inputs: count of allEdges from first, in the order
+                                  first named *)
+        search*: Search;
+        judged*: BOOL;      (* judge or survey has decided it; stamp and stale mean
+                               nothing until then *)
+        stamp*: I64;        (* when the file was last changed, in nanoseconds since 1970,
+                               or Missing; Missing for a task too *)
+        stale*: BOOL;       (* out of date: it is to be made *)
+        broken*: BOOL;      (* can't be had: a missing input no rule makes, a target whose
+                               recipe failed, or one left unmade as it needs a broken node *)
+    end;
+
+var
+    (* the nodes: first the targets of the plain rules, in the order of
+       the file, then the rest in the order they were first needed *)
+    nodes: Nodes.Vec;
+    (* each node's number, by its name *)
+    names: Names.Map;
+    (* every node's inputs, as node numbers, each node's in one run *)
+    edges: Ints.Vec;
+    (* the nodes named on the command line, in the order named, each once *)
+    goals: Ints.Vec;
+    (* the nodes that are out of date, each after every node it needs:
+       what Rjob will make, in order *)
+    plan: Ints.Vec;
+    (* judge found an input that is missing and that no rule makes; only
+       with -k does robbie get past one *)
+    missingInput*: BOOL;
+    (* decide is judging for the listing, which reports nothing: a
+       missing input only makes what needs it out of date *)
+    silent: BOOL;
+    (* the nodes before this one have been matched against the patterns *)
+    matched: INT;
+    (* for each rule, whether it is being tried as a pattern further up
+       the search, and so must not be tried again *)
+    trying: Flags.Vec;
+    (* the path the search for loops is following, from the node it
+       started at, as node numbers *)
+    path: Ints.Vec;
+
+(* The nodes; good until the next is added. *)
+proc allNodes*: []Node;
+begin
+    return Nodes.all(ADR(nodes));
+end;
+
+(* Node n; good until the next is added. *)
+proc node*(n: INT): ^Node;
+begin
+    return ADR(Nodes.all(ADR(nodes))[n]);
+end;
+
+(* Every node's inputs, as node numbers. *)
+proc allEdges*: []INT;
+begin
+    return Ints.all(ADR(edges));
+end;
+
+(* The goals, as node numbers, in the order named. *)
+proc allGoals*: []INT;
+begin
+    return Ints.all(ADR(goals));
+end;
+
+(* What is to be made, as node numbers, each after what it needs. *)
+proc allPlan*: []INT;
+begin
+    return Ints.all(ADR(plan));
+end;
+
+(* The place of the rule that makes node n, for messages; n must have
+   one. *)
+proc whereOf(n: INT): Rbase.Where;
+begin
+    return Rread.allRules()[node(n)^.rule].where;
+end;
+
+(* ------------------------------------------------------------- nodes *)
+
+(* The number of the node called name, or -1 when there is none. *)
+proc findNode*(name: []U8): INT;
+var n: INT; ok: BOOL;
+begin
+    n, ok := Names.get(ADR(names), name);
+    if not ok then return -1; end;
+    return n;
+end;
+
+(* The number of the node called name, adding a node with no rule and
+   no inputs when there is none. *)
+proc nodeFor(name: []U8): INT;
+var n: INT;
+begin
+    n := findNode(name);
+    if n >= 0 then return n; end;
+    n := nodes.len;
+    Nodes.push(ADR(nodes), {name: name, rule: -1});
+    if not Names.put(ADR(names), name, n) then Rbase.fatal(Rbase.Nowhere, ["out of memory"]); end;
+    return n;
+end;
+
+(* ---------------------------------------------------------- patterns *)
+
+proc canHave(name: []U8): BOOL; forward;
+
+(* Whether every input of the pattern rule r, with its '*' standing for
+   stem, exists or can be made. While it looks, r is marked as being
+   tried, so the search below can't use it again. *)
+proc viable(r: INT; stem: []U8): BOOL;
+var inputs, word: []U8; i: INT; ok: BOOL;
+begin
+    ok := true;
+    Flags.all(ADR(trying))[r] := true;
+    inputs := Rread.allRules()[r].inputs;
+    word := Rexpand.nextWord(inputs, i);
+    while ok and (LEN(word) > 0) do
+        ok := canHave(Rexpand.stemmed(word, stem));
+        word := Rexpand.nextWord(inputs, i);
+    end;
+    Flags.all(ADR(trying))[r] := false;
+    return ok;
+end;
+
+(* The first pattern rule, in the order of the file, that fits name and
+   whose inputs all exist or can be made, and what its '*' stands for;
+   -1 and "" when there is none. Patterns being tried further up are
+   passed over. *)
+proc patternFor(name: []U8): (INT, []U8);
+var rs: []Rread.Rule; stem: []U8; r: INT; ok: BOOL;
+begin
+    rs := Rread.allRules();
+    for r := 0 to LEN(rs) - 1 do
+        if rs[r].pattern and not Flags.all(ADR(trying))[r] then
+            stem, ok := Rexpand.matches(rs[r].target, name);
+            if ok and viable(r, stem) then return r, stem; end;
+        end;
+    end;
+    return -1, "";
+end;
+
+(* Whether the file or task name exists or can be made: when some rule
+   already makes its node, the file is there, or a pattern could make
+   it. *)
+proc canHave(name: []U8): BOOL;
+var n, r, e: INT;
+begin
+    n := findNode(name);
+    if (n >= 0) and (node(n)^.rule >= 0) then return true; end;
+    _, e := Sys.info(name);
+    if e = 0 then return true; end;
+    r, _ := patternFor(name);
+    return r >= 0;
+end;
+
+(* ---------------------------------------------------------- building *)
+
+(* Adds an edge from node n, whose edges are the last run of edges, to
+   node m, unless n already has one: a node needs each input once. *)
+proc addEdge(n, m: INT);
+var es: []INT; i: INT;
+begin
+    es := allEdges();
+    for i := node(n)^.first to LEN(es) - 1 do
+        if es[i] = m then return; end;
+    end;
+    Ints.push(ADR(edges), m);
+end;
+
+(* Gives node n an edge to each file the glob word matches, in the
+   order of their names. A glob that matches nothing stops robbie with
+   a message at n's rule. *)
+proc addGlob(n: INT; word: []U8);
+var list, name: []U8; i: INT;
+begin
+    list := Rexpand.globNames(whereOf(n), word);
+    if LEN(list) = 0 then
+        Rbase.fatal(whereOf(n), ["'", node(n)^.name, "' needs '", word, "', which matches no file"]);
+    end;
+    name := Rexpand.nextWord(list, i);
+    while LEN(name) > 0 do
+        addEdge(n, nodeFor(name));
+        name := Rexpand.nextWord(list, i);
+    end;
+end;
+
+(* Gives node n an edge to each word of the inputs of the rule that
+   makes it, adding a node for any name that has none yet. In a plain
+   rule a word with a '*' is a glob, and stands for the files it
+   matches; in a pattern the '*' is n's stem. The edges are added as one
+   run at the end of edges. *)
+proc addInputs(n: INT);
+var r: Rread.Rule; word: []U8; i: INT;
+begin
+    r := Rread.allRules()[node(n)^.rule];
+    node(n)^.first := edges.len;
+    word := Rexpand.nextWord(r.inputs, i);
+    while LEN(word) > 0 do
+        if r.pattern then
+            addEdge(n, nodeFor(Rexpand.stemmed(word, node(n)^.stem)));
+        elsif Rexpand.stars(word) > 0 then
+            addGlob(n, word);
+        else
+            addEdge(n, nodeFor(word));
+        end;
+        word := Rexpand.nextWord(r.inputs, i);
+    end;
+    node(n)^.count := edges.len - node(n)^.first;
+end;
+
+(* ------------------------------------------------------------- loops *)
+
+(* Reports the loop that the edge from node last, at the end of path,
+   to node back, on path, closes: each link of it on a line of its own,
+   with the place of the rule that makes the link. Stops robbie. *)
+proc reportLoop(last, back: INT);
+var p: []INT; k: INT;
+begin
+    p := Ints.all(ADR(path));
+    k := LEN(p) - 1;
+    while p[k] # back do DEC(k); end;
+    Rbase.report(whereOf(back), ["'", node(back)^.name, "' needs itself, through a loop:"]);
+    while k < LEN(p) - 1 do
+        Rbase.report(whereOf(p[k]), ["  ", node(p[k])^.name, " needs ", node(p[k + 1])^.name]);
+        INC(k);
+    end;
+    Rbase.fatal(whereOf(last), ["  ", node(last)^.name, " needs ", node(back)^.name]);
+end;
+
+(* Follows every input of node n, and every input of those, stopping
+   robbie at the first loop. Marks each node reached clear once all it
+   leads to has been followed, so no node is followed twice. The depth
+   of the recursion is that of the longest chain of rules, which is
+   short. *)
+proc follow(n: INT);
+var i, m: INT;
+begin
+    node(n)^.search := onPath;
+    Ints.push(ADR(path), n);
+    for i := node(n)^.first to node(n)^.first + node(n)^.count - 1 do
+        m := allEdges()[i];
+        match node(m)^.search of
+        | onPath: reportLoop(n, m);
+        | unseen: follow(m);
+        | clear:
+        end;
+    end;
+    _, _ := Ints.pop(ADR(path));
+    node(n)^.search := clear;
+end;
+
+(* Matches every node not matched yet against the patterns, giving
+   those a pattern makes their rule, stem and inputs, and then the new
+   inputs in turn, until none is left; then stops robbie with a message
+   if the graph holds a loop. The search for loops starts from each node
+   with a rule in the order of the nodes, so the loop reported is the
+   same from one run to the next. *)
+proc settle;
+var i, r: INT; stem: []U8;
+begin
+    while matched < nodes.len do
+        if node(matched)^.rule < 0 then
+            r, stem := patternFor(node(matched)^.name);
+            if r >= 0 then
+                node(matched)^.rule := r;
+                node(matched)^.stem := stem;
+                addInputs(matched);
+            end;
+        end;
+        INC(matched);
+    end;
+    (* only nodes with a rule have inputs, so only they can start a loop *)
+    for i := 0 to nodes.len - 1 do
+        if (node(i)^.rule >= 0) and (node(i)^.search = unseen) then follow(i); end;
+    end;
+end;
+
+(* Builds the nodes and edges from the rules Rread read, matching the
+   patterns against every name the plain rules need, and stops robbie
+   with a message if they hold a loop. *)
+proc buildGraph*;
+var rs: []Rread.Rule; i, n: INT;
+begin
+    rs := Rread.allRules();
+    (* one flag per rule, all false; kept for want, which matches again *)
+    Flags.resize(ADR(trying), LEN(rs));
+    (* every plain target first, so they come first among the nodes *)
+    for i := 0 to LEN(rs) - 1 do
+        if not rs[i].pattern then
+            n := nodeFor(rs[i].target);
+            node(n)^.rule := i;
+        end;
+    end;
+    (* the plain targets need no matching, since a plain rule wins *)
+    matched := nodes.len;
+    for i := 0 to matched - 1 do addInputs(i); end;
+    settle;
+end;
+
+(* ------------------------------------------------------------- goals *)
+
+(* Adds the node that makes name, a target named on the command line,
+   to the goals, unless it is there already. A name only a pattern makes
+   gets its node here, and what it needs is matched and checked for
+   loops. A name no rule makes is a mistake, reported with the closest
+   target there is, when one is close enough to be a typo; this stops
+   robbie. *)
+proc want*(name: []U8);
+var ns: []Node; gs: []INT; guess: []U8; i, n, dist: INT;
+begin
+    n := nodeFor(name);
+    settle;
+    ns := allNodes();
+    if ns[n].rule < 0 then
+        dist := 7FFFFFFFFFFFFFFFH;
+        for i := 0 to LEN(ns) - 1 do
+            if ns[i].rule >= 0 then Rexpand.weigh(name, ns[i].name, guess, dist); end;
+        end;
+        if LEN(guess) > 0 then
+            Rbase.fatal(Rbase.Nowhere, ["no rule makes '", name, "'; did you mean '", guess, "'?"]);
+        end;
+        Rbase.fatal(Rbase.Nowhere, ["no rule makes '", name, "'"]);
+    end;
+    gs := allGoals();
+    for i := 0 to LEN(gs) - 1 do
+        if gs[i] = n then return; end;
+    end;
+    Ints.push(ADR(goals), n);
+end;
+
+(* ------------------------------------------------------- out of date *)
+
+(* When the file name was last changed, in nanoseconds since 1970, or
+   Missing when there is no such file. A file robbie can't look at for
+   another reason, such as one in a directory it may not search, stops
+   robbie with a message at w, the place of a rule that makes or needs
+   it, rather than being taken for missing and made again. *)
+proc stampOf*(w: Rbase.Where; name: []U8): I64;
+var info: Sys.Info; e: INT;
+begin
+    info, e := Sys.info(name);
+    if e = 0 then return info.mtime; end;
+    (* ENOTDIR too: a/b when a is a file is as missing as can be *)
+    if (e = -2) or (e = -20) then return Missing; end;
+    Rbase.fatal(w, ["cannot read the time of '", name, "': ", Rbase.reason(e)]);
+    return Missing;
+end;
+
+(* Decides whether node n, and everything it needs, is out of date,
+   setting their stamp, stale and judged fields, and adds those that
+   are to the plan, n last. A node already judged, through another goal
+   or another input, is left alone, so each is judged, and planned,
+   once. An input no rule makes must be there already; when one is
+   missing, robbie stops with a message at the rule of n, which needs
+   it, unless keepGoing: then the message is only reported, the input
+   is marked broken, and missingInput set. While silent, the input is
+   only marked broken. The depth of the recursion is that of the longest
+   chain of rules, as in follow. Adds no node, so the pointers it holds
+   stay good. *)
+proc decide(n: INT; keepGoing: BOOL);
+var es: []INT; me, it: ^Node; i: INT;
+begin
+    es := allEdges();
+    me := node(n);
+    me^.judged := true;
+    (* first everything n needs, so their stamps and stale fields are
+       known below; a name no rule makes is judged here, as it has
+       nothing to decide but its time *)
+    for i := me^.first to me^.first + me^.count - 1 do
+        it := node(es[i]);
+        if it^.judged then continue; end;
+        if it^.rule >= 0 then
+            decide(es[i], keepGoing);
+            continue;
+        end;
+        it^.judged := true;
+        it^.stale := false;
+        it^.stamp := stampOf(whereOf(n), it^.name);
+        if it^.stamp = Missing then
+            it^.broken := true;
+            if silent then continue; end;
+            if not keepGoing then
+                Rbase.fatal(whereOf(n), ["'", me^.name, "' needs '", it^.name,
+                    "', which does not exist, and no rule makes it"]);
+            end;
+            Rbase.report(whereOf(n), ["'", me^.name, "' needs '", it^.name,
+                "', which does not exist, and no rule makes it"]);
+            missingInput := true;
+        end;
+    end;
+    if Rread.allRules()[me^.rule].task then
+        me^.stamp := Missing;
+        me^.stale := true;
+    else
+        me^.stamp := stampOf(whereOf(n), me^.name);
+        me^.stale := me^.stamp = Missing;
+    end;
+    (* a missing file, or a task, is stale whatever its inputs say; a
+       broken input makes n stale too, so it reaches the plan, where
+       Rjob says that it can't be made *)
+    i := me^.first;
+    while not me^.stale and (i < me^.first + me^.count) do
+        it := node(es[i]);
+        me^.stale := it^.stale or it^.broken or (it^.stamp > me^.stamp);
+        INC(i);
+    end;
+    if me^.stale then Ints.push(ADR(plan), n); end;
+end;
+
+(* Decides what the goals need made, filling the plan: every goal and
+   every node a goal needs, however indirectly, that is out of date,
+   each after the nodes it needs, and the goals in the order they were
+   named. Stops robbie with a message at a file whose time can't be
+   read, and at a missing input no rule makes unless keepGoing, as for
+   -k; then it goes on, and sets missingInput. *)
+proc judge*(keepGoing: BOOL);
+var gs: []INT; i: INT;
+begin
+    gs := allGoals();
+    for i := 0 to LEN(gs) - 1 do
+        if not node(gs[i])^.judged then decide(gs[i], keepGoing); end;
+    end;
+end;
+
+(* Decides, for the listing, whether every target a rule makes is out
+   of date, as judge does for the goals, but reporting nothing: a
+   missing input no rule makes is marked broken, and makes what needs it
+   out of date, which is all the listing wants to know. Fills the plan
+   as judge does, which the listing doesn't use. *)
+proc survey*;
+var i: INT;
+begin
+    silent := true;
+    for i := 0 to nodes.len - 1 do
+        if (node(i)^.rule >= 0) and not node(i)^.judged then decide(i, false); end;
+    end;
+    silent := false;
+end;
+
+(* Forgets every judgement, the goals and the plan, so that judge or
+   survey can start afresh, as the interactive mode does after each
+   run, when files have changed. The graph itself stays as it is. *)
+proc forget*;
+var ns: []Node; i: INT;
+begin
+    ns := allNodes();
+    for i := 0 to LEN(ns) - 1 do
+        ns[i].judged := false;
+        ns[i].stale := false;
+        ns[i].broken := false;
+    end;
+    Ints.reset(ADR(goals));
+    Ints.reset(ADR(plan));
+    missingInput := false;
+end;
+
+begin
+    Nodes.init(ADR(nodes), Heap.heap);
+    Names.init(ADR(names), Heap.heap);
+    Ints.init(ADR(edges), Heap.heap);
+    Ints.init(ADR(goals), Heap.heap);
+    Ints.init(ADR(plan), Heap.heap);
+    Ints.init(ADR(path), Heap.heap);
+    Flags.init(ADR(trying), Heap.heap);
+end Rgraph.

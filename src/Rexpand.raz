@@ -1,0 +1,554 @@
+(* Rexpand: the variables, and filling in {name} in a piece of robfile
+   text.
+
+   A placeholder is a name in braces, and nothing else: {cc} is one,
+   { print $1 }, {a,b} and {} are not, and pass through untouched, so
+   shell code needs no escaping in the common case. A brace just after
+   a '$' belongs to the shell as well, so ${HOME} reaches sh as it was
+   written. robbie never touches '$' itself. Two opening braces in a
+   row stand for one, for the rare shell code that does look like a
+   placeholder: awk's {print} is written with its brace doubled.
+
+   Expansion is one pass from left to right. What a placeholder stands
+   for is copied in as it is, and never looked at again, so a value
+   that holds braces can't set off a second round of expansion.
+
+   A name that means nothing is an error, since it is nearly always a
+   typo. The message suggests the closest name robbie knows, if one is
+   close enough, measured by the number of one-letter edits between
+   them (a swap of two neighbouring letters counts as one edit, which
+   catches the commonest slip of all: tagret for target).
+
+   robbie has two kinds of names. The variables live here, in the order
+   they were first set; a variable set again keeps its place and takes
+   the new value, and one set on the command line is fixed, so that
+   the robfile can't change it. robbie's own placeholders, target,
+   input, inputs, newer and stem, stand for parts of the rule being
+   made. What Rread reads outside recipes, values, the first lines of
+   rules, descriptions, is expanded as it is read, and there no rule is
+   being made, so robbie's own placeholders mean nothing. A recipe is
+   expanded by Rjob as it runs, once setOwn has said what they stand
+   for, and once before anything runs, to find an unknown name early;
+   by then the whole robfile has been read, so a recipe sees each
+   variable's final value, as make's do. The own placeholders can't be
+   variable names, since a variable of the same name would always be
+   hidden by them.
+
+   A pattern's '*' and the stem it stands for are text too, so matching
+   a name against a pattern (matches) and putting a stem in place of a
+   '*' (stemmed) live here; Rgraph uses them to apply pattern rules.
+
+   They also make comprehensions, the one placeholder that is not a
+   name: {*.o for *.c} is a '.o' for each '.c' file on disk, and
+   {*.o for *.c in sources} a '.o' for each word of {sources} that ends
+   in '.c', leaving out the words that don't. Both parts must hold a
+   '*', and the words must be spelt just so, or the braces are shell
+   code like any other and pass through. The files on disk come from
+   glob(3) in the C library, through globNames, which Rgraph uses too,
+   for globs among a rule's inputs; only '*' is a wildcard, and '?',
+   '[' and '\' are escaped before glob(3) sees them. A comprehension
+   that globs nothing is an error, as such a glob among a rule's inputs
+   is, but one over a list may come out empty.
+
+   It uses Rbase for the text and the messages, Buf and Heap to build
+   strings, and the C library for glob(3). Rread calls expanded on what
+   it reads outside recipes, and Rjob on recipes; Rgraph uses weigh to
+   suggest a target for one mistyped on the command line, and Robbie
+   isOwnPlaceholder to refuse a variable on the command line that has
+   the name of one. *)
+module Rexpand;
+import Buf, Heap, Rbase;
+import Vars := Vec(Var);
+
+type
+    (* A variable. *)
+    Var* = record
+        name*: []U8;    (* its name *)
+        value*: []U8;   (* its value: from the robfile, expanded and with blanks at
+                           either end removed; from the command line, as it was given *)
+        fixed*: BOOL;   (* set on the command line, which the robfile can't override *)
+    end;
+
+    (* glob(3)'s result, as the C library lays it out: the number of
+       names matched, and the names, as C strings. What follows them is
+       the library's own business, which the padding makes room for. *)
+    Glob = record
+        count: UINT;    (* gl_pathc: how many names matched *)
+        names: ^^U8;    (* gl_pathv: the names, sorted *)
+        offs: UINT;     (* gl_offs: unused, as robbie never asks for it *)
+        rest: [8]^U8;   (* the rest, which differs between libraries *)
+    end;
+
+const
+    (* robbie's own placeholders, which name parts of the rule being
+       made; stem is the last *)
+    OwnNames: [5][]U8 = ["target", "input", "inputs", "newer", "stem"];
+    Stem = 4;
+    (* what glob(3) returns when the pattern matched nothing *)
+    GlobNoMatch = 3;
+
+extern proc glob(pattern: ^U8; flags: I32; errfunc: ^U8; pglob: ^Glob): I32;
+extern proc globfree(pglob: ^Glob);
+
+var
+    (* the variables, in the order they were first set *)
+    vars: Vars.Vec;
+    (* what each of OwnNames stands for, in the same order, while a
+       recipe is being filled in *)
+    ownValues: [5][]U8;
+    (* whether ownValues holds anything: true only between setOwn and
+       clearOwn *)
+    inRecipe: BOOL;
+    (* whether the recipe being filled in is a pattern's, and so has a
+       stem; meaningful only while inRecipe is *)
+    inPattern: BOOL;
+
+(* -------------------------------------------------------- variables *)
+
+(* The variables, in the order they were first set. *)
+proc allVars*: []Var;
+begin
+    return Vars.all(ADR(vars));
+end;
+
+(* The index in allVars of the variable called name, or -1 when there
+   is none. A robfile has a handful of variables, so a straight search
+   is fast enough. *)
+proc findVar*(name: []U8): INT;
+var vs: []Var; i: INT;
+begin
+    vs := allVars();
+    for i := 0 to LEN(vs) - 1 do
+        if vs[i].name = name then return i; end;
+    end;
+    return -1;
+end;
+
+(* Gives the variable name the value value, adding the variable if it
+   is new. A fixed value comes from the command line: a later fixed
+   value replaces it, but one that isn't fixed, from the robfile, is
+   ignored. *)
+proc setVar*(name, value: []U8; fixed: BOOL);
+var i: INT; v: ^Var;
+begin
+    i := findVar(name);
+    if i < 0 then
+        v := Vars.add(ADR(vars));
+        v^.name := name;
+    else
+        v := ADR(allVars()[i]);
+    end;
+    if v^.fixed and not fixed then return; end;
+    v^.value := value;
+    v^.fixed := fixed;
+end;
+
+(* --------------------------------------------- robbie's placeholders *)
+
+(* The index in OwnNames of name, or -1 when it is not one of robbie's
+   own placeholders. *)
+proc ownIndex(name: []U8): INT;
+var i: INT;
+begin
+    for i := 0 to LEN(OwnNames) - 1 do
+        if name = OwnNames[i] then return i; end;
+    end;
+    return -1;
+end;
+
+(* Whether name is one of robbie's own placeholders. *)
+proc isOwnPlaceholder*(name: []U8): BOOL;
+begin
+    return ownIndex(name) >= 0;
+end;
+
+(* Says what robbie's own placeholders stand for, from now until
+   clearOwn: the parts of the rule whose recipe is about to be filled
+   in. pattern says whether that rule is a pattern; only a pattern has
+   a stem, so {stem} anywhere else is a mistake. *)
+proc setOwn*(target, input, inputs, newer, stem: []U8; pattern: BOOL);
+begin
+    ownValues := [target, input, inputs, newer, stem];
+    inPattern := pattern;
+    inRecipe := true;
+end;
+
+(* Makes robbie's own placeholders mean nothing again, as they do
+   outside a recipe. *)
+proc clearOwn*;
+begin
+    inRecipe := false;
+end;
+
+(* ------------------------------------------------------ did you mean *)
+
+(* The number of edits that turn a into b, where an edit inserts,
+   removes or changes one letter, or swaps two neighbouring ones. This
+   is the "optimal string alignment" distance: the usual table of
+   Levenshtein's, filled a row at a time, keeping only the last three
+   rows, which the swap needs. Names are cut to 255 bytes, which no
+   name worth suggesting comes near. *)
+proc distance(a, b: []U8): INT;
+var
+    (* the rows for a[0..i-2], a[0..i-1] and a[0..i]: entry j is the
+       distance from that prefix of a to b[0..j] *)
+    older, prev, cur: [256]INT;
+    i, j, best, change: INT;
+begin
+    if LEN(a) > 255 then a := a[0..255]; end;
+    if LEN(b) > 255 then b := b[0..255]; end;
+    for j := 0 to LEN(b) do prev[j] := j; end;
+    older := prev;
+    for i := 1 to LEN(a) do
+        cur[0] := i;
+        for j := 1 to LEN(b) do
+            (* remove a's letter, insert b's, or change one into the other *)
+            best := prev[j] + 1;
+            if cur[j - 1] + 1 < best then best := cur[j - 1] + 1; end;
+            change := 0;
+            if a[i - 1] # b[j - 1] then change := 1; end;
+            if prev[j - 1] + change < best then best := prev[j - 1] + change; end;
+            (* swap a's last two letters *)
+            if (i > 1) and (j > 1) and (a[i - 1] = b[j - 2]) and (a[i - 2] = b[j - 1])
+                    and (older[j - 2] + 1 < best) then
+                best := older[j - 2] + 1;
+            end;
+            cur[j] := best;
+        end;
+        older := prev;
+        prev := cur;
+    end;
+    return prev[LEN(b)];
+end;
+
+(* Weighs known as a suggestion for the unknown name typed, and makes
+   it the best one so far if it is closer than dist, the distance of the
+   best one so far. A name is close enough when it is at most one edit
+   away for every three letters of typed, and one edit in any case, but
+   never as far away as typed is long: from x to y is one edit, but no
+   one mistyped the one for the other. Start with best empty and dist
+   at the largest INT, and call this once for every known name; Rgraph
+   does, for a target named on the command line. *)
+proc weigh*(typed, known: []U8; var best: []U8; var dist: INT);
+var d, most: INT;
+begin
+    most := LEN(typed) div 3;
+    if most < 1 then most := 1; end;
+    d := distance(typed, known);
+    if (d <= most) and (d < LEN(typed)) and (d < dist) then
+        best := known;
+        dist := d;
+    end;
+end;
+
+(* The known name closest to name, or "" when none is close enough. The
+   candidates are robbie's own placeholders and the variables set so
+   far, and the first of equally close ones wins. *)
+proc suggest(name: []U8): []U8;
+var best: []U8; dist, i: INT; vs: []Var;
+begin
+    dist := 7FFFFFFFFFFFFFFFH;
+    for i := 0 to LEN(OwnNames) - 1 do weigh(name, OwnNames[i], best, dist); end;
+    vs := allVars();
+    for i := 0 to LEN(vs) - 1 do weigh(name, vs[i].name, best, dist); end;
+    return best;
+end;
+
+(* Reports that the placeholder called name, at w, means nothing, with
+   a hint at what might have been meant, and stops robbie. *)
+proc unknown(w: Rbase.Where; name: []U8);
+var guess: []U8;
+begin
+    if isOwnPlaceholder(name) then
+        Rbase.fatal(w, ["{", name, "} can only be used in a recipe"]);
+    end;
+    guess := suggest(name);
+    if LEN(guess) > 0 then
+        Rbase.fatal(w, ["unknown placeholder {", name, "}; did you mean {", guess, "}?"]);
+    end;
+    Rbase.fatal(w, ["unknown placeholder {", name, "}; write {{ for a literal {"]);
+end;
+
+(* ------------------------------------------------------------ lists *)
+
+(* Whether c separates the words of a list, such as a variable's value:
+   a blank, or a line feed, which only a value set on the command line
+   can hold. *)
+proc isListBlank(c: U8): BOOL;
+begin
+    return Rbase.isBlank(c) or (c = '\n');
+end;
+
+(* The word of the list s at or after byte i, and i moved past it; ""
+   when only blanks are left. *)
+proc nextWord*(s: []U8; var i: INT): []U8;
+var start: INT;
+begin
+    while (i < LEN(s)) and isListBlank(s[i]) do INC(i); end;
+    start := i;
+    while (i < LEN(s)) and not isListBlank(s[i]) do INC(i); end;
+    return s[start..i];
+end;
+
+(* ------------------------------------------------------------ globs *)
+
+(* The files the glob word matches, sorted by name: a list of words
+   with one space between them, "" when nothing matched. Only '*' is a
+   wildcard: '?', '[' and '\' get a backslash before glob(3) sees them.
+   Stops robbie with a message at w when glob(3) fails for any other
+   reason. *)
+proc globNames*(w: Rbase.Where; word: []U8): []U8;
+var b: Buf.Buf; g: Glob; pattern, list: []U8; status: I32; i: UINT; name: ^U8; n, k: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    for k := 0 to LEN(word) - 1 do
+        if (word[k] = '?') or (word[k] = '[') or (word[k] = '\\') then Buf.add(ADR(b), '\\'); end;
+        Buf.add(ADR(b), word[k]);
+    end;
+    Buf.add(ADR(b), 0);
+    pattern := Buf.bytes(ADR(b));
+    status := glob(ADR(pattern[0]), 0, nil, ADR(g));
+    if (status # 0) and (status # GlobNoMatch) then
+        Rbase.fatal(w, ["cannot expand '", word, "'"]);
+    end;
+    Buf.reset(ADR(b));
+    if status = 0 then
+        for i := 0 to g.count - 1 do
+            if i > 0 then Buf.add(ADR(b), ' '); end;
+            name := g.names[i];
+            n := 0;
+            while name[n] # 0 do INC(n); end;
+            Buf.str(ADR(b), name[0..n]);
+        end;
+        globfree(ADR(g));
+    end;
+    list := Rbase.keep(Buf.bytes(ADR(b)));
+    return list;
+end;
+
+(* ------------------------------------------------------------ stems *)
+
+(* How many times '*' appears in s. *)
+proc stars*(s: []U8): INT;
+var i, n: INT;
+begin
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '*' then INC(n); end;
+    end;
+    return n;
+end;
+
+(* The stem name has as pattern, a word with one '*', and true; or ""
+   and false when it doesn't fit it. name fits when it starts with what
+   comes before the '*' and ends with what comes after, with at least
+   one byte left between them for the '*' to stand for: those bytes,
+   a slice of name, are the stem. So build/a.o fits build/*.o, with the
+   stem a. *)
+proc matches*(pattern, name: []U8): ([]U8, BOOL);
+var k, tail: INT;
+begin
+    k := 0;
+    while pattern[k] # '*' do INC(k); end;
+    tail := LEN(pattern) - k - 1;
+    if (LEN(name) > k + tail) and (pattern[0..k] = name[0..k])
+            and (pattern[k + 1..LEN(pattern)] = name[LEN(name) - tail..LEN(name)]) then
+        return name[k..LEN(name) - tail], true;
+    end;
+    return "", false;
+end;
+
+(* Adds word to b, with each '*' in it replaced by stem. *)
+proc addStemmed(b: ^Buf.Buf; word, stem: []U8);
+var i: INT;
+begin
+    for i := 0 to LEN(word) - 1 do
+        if word[i] = '*' then Buf.str(b, stem); else Buf.add(b, word[i]); end;
+    end;
+end;
+
+(* word with each '*' in it replaced by stem: word itself when it has
+   none, and otherwise a new string. *)
+proc stemmed*(word, stem: []U8): []U8;
+var b: Buf.Buf; s: []U8;
+begin
+    if stars(word) = 0 then return word; end;
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    addStemmed(ADR(b), word, stem);
+    s := Rbase.keep(Buf.bytes(ADR(b)));
+    return s;
+end;
+
+(* ----------------------------------------------------- placeholders *)
+
+(* What the placeholder called name stands for: one of robbie's own,
+   while a recipe is being filled in, or a variable. Stops robbie with
+   a message at w when it stands for nothing, or when it is {stem}
+   outside a pattern. *)
+proc valueOf(w: Rbase.Where; name: []U8): []U8;
+var v: INT;
+begin
+    v := ownIndex(name);
+    if inRecipe and (v = Stem) and not inPattern then
+        Rbase.fatal(w, ["{stem} can only be used in the recipe of a pattern"]);
+    end;
+    if inRecipe and (v >= 0) then return ownValues[v]; end;
+    v := findVar(name);
+    if v < 0 then unknown(w, name); end;
+    return allVars()[v].value;
+end;
+
+(* Moves j past the blanks there; whether there were any. *)
+proc skipBlanks(s: []U8; var j: INT): BOOL;
+var start: INT;
+begin
+    start := j;
+    while (j < LEN(s)) and Rbase.isBlank(s[j]) do INC(j); end;
+    return j > start;
+end;
+
+(* The word at j, which ends at a blank or a brace, and j moved past
+   it. *)
+proc token(s: []U8; var j: INT): []U8;
+var start: INT;
+begin
+    start := j;
+    while (j < LEN(s)) and not isListBlank(s[j]) and (s[j] # '{') and (s[j] # '}') do INC(j); end;
+    return s[start..j];
+end;
+
+(* Whether the keyword k, and a blank, are at j; j is moved past the
+   keyword when they are. *)
+proc keyword(s: []U8; var j: INT; k: []U8): BOOL;
+begin
+    if (j + LEN(k) < LEN(s)) and (s[j..j + LEN(k)] = k) and Rbase.isBlank(s[j + LEN(k)]) then
+        j := j + LEN(k);
+        return true;
+    end;
+    return false;
+end;
+
+(* Reads the comprehension whose opening brace is at byte i of s:
+   {want for pattern} or {want for pattern in name}, with blanks between
+   the words, and none just inside the braces. Both want and pattern
+   must hold a '*', so that shell code is never taken for one. Gives
+   the byte after the closing brace, the three parts, name "" for the
+   first form, and true; or false when what is there is not a
+   comprehension. *)
+proc readComprehension(s: []U8; i: INT): (INT, []U8, []U8, []U8, BOOL);
+var j, start: INT; want, pattern, name: []U8;
+begin
+    j := i + 1;
+    want := token(s, j);
+    if (stars(want) = 0) or not skipBlanks(s, j) or not keyword(s, j, "for")
+            or not skipBlanks(s, j) then
+        return 0, "", "", "", false;
+    end;
+    pattern := token(s, j);
+    if stars(pattern) = 0 then return 0, "", "", "", false; end;
+    if not ((j < LEN(s)) and (s[j] = '}')) then
+        if not skipBlanks(s, j) or not keyword(s, j, "in") or not skipBlanks(s, j) then
+            return 0, "", "", "", false;
+        end;
+        start := j;
+        while (j < LEN(s)) and Rbase.isNameChar(s[j]) do INC(j); end;
+        name := s[start..j];
+        if not Rbase.isName(name) or (j = LEN(s)) or (s[j] # '}') then
+            return 0, "", "", "", false;
+        end;
+    end;
+    return j + 1, want, pattern, name, true;
+end;
+
+(* The list a comprehension stands for, a word to each item with one
+   space between: want, with its '*' standing for the stem, once for
+   each word that fits pattern. The words are the files the glob
+   pattern matches when name is "", as for {*.o for *.c}, and otherwise
+   those of the placeholder name, where words that don't fit are left
+   out. A glob that matches nothing, like one among a rule's inputs, is
+   an error, and stops robbie with a message at w; so do a pattern with
+   two '*' and an unknown name. *)
+proc comprehension(w: Rbase.Where; want, pattern, name: []U8): []U8;
+var b: Buf.Buf; list, word, stem, s: []U8; i: INT; ok: BOOL;
+begin
+    if stars(pattern) > 1 then
+        Rbase.fatal(w, ["a pattern has one '*', not '", pattern, "'"]);
+    end;
+    if LEN(name) = 0 then
+        list := globNames(w, pattern);
+        if LEN(list) = 0 then Rbase.fatal(w, ["'", pattern, "' matches no file"]); end;
+    else
+        list := valueOf(w, name);
+    end;
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    word := nextWord(list, i);
+    while LEN(word) > 0 do
+        stem, ok := matches(pattern, word);
+        if ok then
+            if b.len > 0 then Buf.add(ADR(b), ' '); end;
+            addStemmed(ADR(b), want, stem);
+        end;
+        word := nextWord(list, i);
+    end;
+    s := Rbase.keep(Buf.bytes(ADR(b)));
+    return s;
+end;
+
+(* s with each placeholder replaced by what it stands for (see
+   valueOf), each comprehension by its list, and each doubled opening
+   brace by a single one: s itself when there is nothing to replace,
+   and otherwise a new string. An unknown name stops robbie with a
+   message at w. *)
+proc expanded*(w: Rbase.Where; s: []U8): []U8;
+var
+    b: Buf.Buf;
+    i, j, start: INT;    (* s[start..i] is text still to be copied as it is *)
+    name, want, pattern, value, r: []U8;
+    ok: BOOL;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    while i < LEN(s) do
+        (* a brace just after a '$' is the shell's, as in ${HOME} *)
+        if (s[i] # '{') or ((i > 0) and (s[i - 1] = '$')) then
+            INC(i);
+            continue;
+        end;
+        if (i + 1 < LEN(s)) and (s[i + 1] = '{') then
+            (* keep the first brace of the two, drop the second *)
+            Buf.str(ADR(b), s[start..i + 1]);
+            i := i + 2;
+            start := i;
+            continue;
+        end;
+        (* a placeholder is a name, then a closing brace straight after it *)
+        j := i + 1;
+        while (j < LEN(s)) and Rbase.isNameChar(s[j]) do INC(j); end;
+        name := s[i + 1..j];
+        if (j < LEN(s)) and (s[j] = '}') and Rbase.isName(name) then
+            value := valueOf(w, name);
+            INC(j);
+        else
+            j, want, pattern, name, ok := readComprehension(s, i);
+            if not ok then
+                INC(i);
+                continue;
+            end;
+            value := comprehension(w, want, pattern, name);
+        end;
+        Buf.str(ADR(b), s[start..i]);
+        Buf.str(ADR(b), value);
+        i := j;
+        start := i;
+    end;
+    if start = 0 then return s; end;
+    Buf.str(ADR(b), s[start..LEN(s)]);
+    r := Rbase.keep(Buf.bytes(ADR(b)));
+    return r;
+end;
+
+begin
+    Vars.init(ADR(vars), Heap.heap);
+end Rexpand.

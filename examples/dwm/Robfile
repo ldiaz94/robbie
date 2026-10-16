@@ -1,0 +1,11 @@
+# Robfile for dwm: a C program, one object per source file.
+
+cc = cc -Os
+
+# The window manager.
+dwm: {*.o for *.c}
+    {cc} -o {target} {inputs} -lX11 -lXft
+
+# Each object from its C file.
+*.o: *.c config.h
+    {cc} -c {input} -o {target}

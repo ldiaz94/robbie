@@ -1,0 +1,92 @@
+--- Robfile
+ 1| prog: main.o a.o b.o gen.o build/lib.o
+ 2|     echo link {inputs}
+ 3| *.o: *.c config.h
+ 4|     echo cc -c {input} for {stem}
+ 5| *.o: *.s
+ 6|     echo as {input} for {stem}
+ 7| *.c: *.y
+ 8|     echo yacc {input} to {target}
+ 9| build/*.o: src/*.c
+10|     echo cc {input} to {target}, stem {stem}
+11| main.o: main.c
+12|     echo plain {target}
+$ robbie -p
+prog: main.o a.o b.o gen.o build/lib.o
+    echo link {inputs}
+
+*.o: *.c config.h
+    echo cc -c {input} for {stem}
+
+*.o: *.s
+    echo as {input} for {stem}
+
+*.c: *.y
+    echo yacc {input} to {target}
+
+build/*.o: src/*.c
+    echo cc {input} to {target}, stem {stem}
+
+main.o: main.c
+    echo plain {target}
+exit 0
+$ robbie -n prog
+▸ main.o
+echo plain main.o
+▸ a.o
+echo cc -c a.c for a
+▸ b.o
+echo as b.s for b
+▸ gen.c
+echo yacc gen.y to gen.c
+▸ gen.o
+echo cc -c gen.c for gen
+▸ build/lib.o
+echo cc src/lib.c to build/lib.o, stem lib
+▸ prog
+echo link main.o a.o b.o gen.o build/lib.o
+exit 0
+$ robbie -n x.o
+robbie: no rule makes 'x.o'; did you mean 'a.o'?
+exit 2
+$ robbie x.o
+▸ x.o
+echo cc -c x.c for x
+cc -c x.c for x
+done: 1 made, in (time)
+exit 0
+$ robbie .o
+robbie: no rule makes '.o'; did you mean 'a.o'?
+exit 2
+--- Robfile
+ 1| prog: c.o
+ 2| *.o: *.c
+ 3|     cc {input}
+$ robbie -n prog
+robbie: Robfile:1: 'prog' needs 'c.o', which does not exist, and no rule makes it
+exit 2
+--- Robfile
+ 1| *.o: *.o.c
+ 2|     never
+ 3| task run-*: *.sh
+ 4|     sh {input} {stem}
+$ robbie -n z.o
+robbie: no rule makes 'z.o'
+exit 2
+$ robbie run-hi
+▸ run-hi
+sh hi.sh hi
+hello from hi.sh for hi
+done: 1 made, in (time)
+exit 0
+--- Robfile
+ 1| prog: a.o
+ 2|     echo {stem}
+$ robbie prog
+robbie: Robfile:2: {stem} can only be used in the recipe of a pattern
+exit 2
+--- Robfile
+ 1| *.*: x
+$ robbie -p
+robbie: Robfile:1: a pattern has one '*', not '*.*'
+exit 2

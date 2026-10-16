@@ -1,0 +1,530 @@
+(* Rjob: filling in recipes and running them.
+
+   Rgraph leaves the plan, the targets that are out of date, each after
+   everything it needs. This module makes them: it fills in the
+   placeholders of a target's recipe, echoes the result, and hands it
+   to the shell. A run is a list of targets, each started by a header,
+   '▸ name', so the eye can find where one target's output ends and the
+   next begins, and ends with one line saying how it went: how many
+   targets were made, how many failed, how many were not made because
+   something they needed was not, how many were already up to date, and
+   how long it all took.
+
+   With -j up to that many recipes run at once. The plan is a queue: a
+   target on it is ready once every input it needs is done, and robbie
+   starts the first ready target in the order of the plan whenever
+   fewer recipes are running than -j allows. When none can start, it
+   waits for any child, marks that target done, and looks again. Since
+   the plan puts every target after what it needs, the first target
+   still waiting is always ready once nothing is running, so the queue
+   can't stall, and with -j 1 the targets are made exactly in the order
+   of the plan. The recipes of targets running together write to the
+   same terminal, so their output can interleave, as make's does.
+
+   A recipe is one script, not a shell per line as in make, so a loop
+   can span lines and a 'cd' carries on to the lines after it. It runs
+   as '/bin/sh -e -c script'; -e makes the first failing command stop
+   it, as make's shell per line would. The script is the recipe's
+   lines, filled in, joined by line breaks. The child gets robbie's
+   standard input, output and error, and its environment, which holds
+   every name=value operand as well: Robbie puts them there.
+
+   robbie's own placeholders are filled in here, since only here is a
+   rule being made. {target} is the target, {input} its first input,
+   {inputs} all of them, and {newer} those newer than the target, each
+   list a word to an input, as Rgraph split them, with one space
+   between. {newer} is worked out as the recipe is about to run, from
+   the times of its inputs then, since an input made a moment ago is
+   newer than it was when Rgraph looked. An input that is a task counts
+   as newer always, as it has no time and always runs. With -n nothing
+   is made, so an input that would be made counts as newer.
+
+   A typo in a recipe would otherwise be found only when that recipe
+   ran, perhaps after an hour of building. So before anything runs,
+   checkRecipes fills in every recipe in the robfile once, with robbie's
+   own placeholders standing for nothing, which stops robbie at the
+   first unknown name.
+
+   When a recipe fails, robbie reports it at the rule's line and stops
+   starting recipes, waits for those already running, and exits with
+   status 1. With -k it goes on instead: the target is marked broken,
+   as Rgraph marks a missing input with -k, and a target that needs a
+   broken node is not made, and is broken in turn, so a failure spreads
+   to exactly what depends on it.
+
+   A recipe that fails may already have started writing its target,
+   leaving a file newer than its inputs, which the next run would take
+   for up to date. So when a recipe ends without success, its target is
+   removed if the recipe changed it: if the file's time is no longer the
+   one Rgraph read. A file the recipe never touched is kept, as is a
+   directory, which Sys.remove refuses. make does this only for targets
+   of .DELETE_ON_ERROR, which its own manual says is nearly always
+   wanted.
+
+   On SIGINT or SIGTERM robbie passes the signal on to every recipe
+   running, starts no more, and waits for them all to end. It removes
+   their half-made targets, as for a failure, reports each, and then
+   dies of the same signal, so whatever ran robbie sees what stopped
+   it. The signal only breaks into the wait, and robbie passes it on
+   there, from its own loop, so the table of recipes running is never
+   seen half changed. Ctrl-C from a terminal reaches the recipes
+   directly as well, since they share robbie's process group, so they
+   may see it twice, which does no harm. A signal that was ignored when
+   robbie started, as for a job started in the background by a script,
+   stays ignored, as with nohup.
+
+   It uses Rbase for the text and the messages, Rread for the rules,
+   Rgraph for the plan and the nodes, Rexpand to fill in placeholders,
+   Rterm for colour and the signals, Sys to start, wait for and stop
+   the recipes, and Out for what it prints. Rshow reads the summary of
+   the last run from lastLine and lastFailed. *)
+module Rjob;
+import Sys, Rt, Out, Buf, Heap, Rbase, Rread, Rgraph, Rexpand, Rterm;
+import Phases := Vec(Phase), Children := Vec(Child), Texts := Vec([]U8);
+
+const
+    (* the exit status when a recipe failed *)
+    ExitFailed* = 1;
+    (* the signals that stop a run *)
+    Stoppers: [2]INT = [Sys.sigInt, Sys.sigTerm];
+
+type
+    (* How far the making of a node has got. done comes first, so a
+       table resized from nothing starts with every node done, as every
+       node not on the plan is: it is up to date, or a file no rule
+       makes. *)
+    Phase = (done, waiting, running);
+
+    (* A recipe that is running. *)
+    Child = record
+        pid: INT;       (* its shell's process *)
+        node: INT;      (* the node it is making *)
+    end;
+
+var
+    (* for each node, how far its making has got *)
+    phase: Phases.Vec;
+    (* the recipes running, in no order *)
+    children: Children.Vec;
+    (* how many targets this run has made, has seen fail, and has left
+       unmade because they needed a broken node, for the summary *)
+    madeCount, failedCount, skippedCount: INT;
+    (* the signal that is stopping robbie; 0 while none has come *)
+    caught: INT;
+    (* the lines of the recipe being made, filled in *)
+    lines: Texts.Vec;
+    (* the summary of the last run, less its colour, and whether it
+       failed, which the interactive mode shows below its list *)
+    lastLine*: []U8;
+    lastFailed*: BOOL;
+
+(* ------------------------------------------------------- filling in *)
+
+(* Whether input m of node n counts as newer than n, for {newer}: when
+   m is a task, or m was changed after n, looking again at the time of
+   an input that has just been made. With dryRun nothing has been made,
+   so an input that would have been counts as newer. *)
+proc isNewer(n, m: INT; dryRun: BOOL): BOOL;
+var it: Rgraph.Node; r: Rread.Rule; stamp: I64;
+begin
+    it := Rgraph.node(m)^;
+    stamp := it.stamp;
+    if it.rule >= 0 then
+        r := Rread.allRules()[it.rule];
+        if r.task then return true; end;
+        if it.stale then
+            if dryRun then return true; end;
+            stamp := Rgraph.stampOf(r.where, it.name);
+        end;
+    end;
+    return stamp > Rgraph.node(n)^.stamp;
+end;
+
+(* Says, through Rexpand.setOwn, what robbie's own placeholders stand
+   for while the recipe of node n is filled in. dryRun is passed on to
+   isNewer. *)
+proc setOwnFor(n: INT; dryRun: BOOL);
+var me: Rgraph.Node; es: []INT; input: []U8; inputs, newer: Buf.Buf; i: INT;
+begin
+    me := Rgraph.node(n)^;
+    es := Rgraph.allEdges()[me.first..me.first + me.count];
+    Buf.init(ADR(inputs), Heap.heap);
+    defer Buf.done(ADR(inputs));
+    Buf.init(ADR(newer), Heap.heap);
+    defer Buf.done(ADR(newer));
+    if LEN(es) > 0 then input := Rgraph.node(es[0])^.name; end;
+    for i := 0 to LEN(es) - 1 do
+        if i > 0 then Buf.add(ADR(inputs), ' '); end;
+        Buf.str(ADR(inputs), Rgraph.node(es[i])^.name);
+        if isNewer(n, es[i], dryRun) then
+            if newer.len > 0 then Buf.add(ADR(newer), ' '); end;
+            Buf.str(ADR(newer), Rgraph.node(es[i])^.name);
+        end;
+    end;
+    Rexpand.setOwn(me.name, input, Rbase.keep(Buf.bytes(ADR(inputs))),
+        Rbase.keep(Buf.bytes(ADR(newer))), me.stem, Rread.allRules()[me.rule].pattern);
+end;
+
+(* Fills in the recipe of node n into lines, a filled-in line for each
+   line of the recipe; dryRun is passed on to isNewer. Stops robbie at
+   an unknown placeholder. *)
+proc fill(n: INT; dryRun: BOOL);
+var r: Rread.Rule; ls: []Rread.Line; i: INT;
+begin
+    setOwnFor(n, dryRun);
+    Texts.reset(ADR(lines));
+    r := Rread.allRules()[Rgraph.node(n)^.rule];
+    ls := Rread.allRecipes();
+    for i := r.first to r.first + r.count - 1 do
+        Texts.push(ADR(lines), Rexpand.expanded(ls[i].where, ls[i].text));
+    end;
+    Rexpand.clearOwn;
+end;
+
+(* Fills in the recipe of every rule once, with robbie's own
+   placeholders standing for nothing, and throws the result away: this
+   only stops robbie, before anything has run, at the first unknown
+   name in any recipe. *)
+proc checkRecipes*;
+var rs: []Rread.Rule; ls: []Rread.Line; i, j: INT;
+begin
+    rs := Rread.allRules();
+    ls := Rread.allRecipes();
+    for i := 0 to LEN(rs) - 1 do
+        Rexpand.setOwn("", "", "", "", "", rs[i].pattern);
+        for j := rs[i].first to rs[i].first + rs[i].count - 1 do
+            _ := Rexpand.expanded(ls[j].where, ls[j].text);
+        end;
+    end;
+    Rexpand.clearOwn;
+end;
+
+(* ------------------------------------------------------------ the run *)
+
+(* Writes the header that starts the making of name: '▸ name'. *)
+proc showHeader(name: []U8);
+begin
+    Rterm.paint(Rterm.Style.header);
+    Out.str("▸ ");
+    Out.str(name);
+    Rterm.paint(Rterm.Style.plain);
+    Rterm.endLine;
+end;
+
+(* Adds to b, the summary being built, the part 'n what', when n isn't
+   0, with a comma before it unless it is the first part. *)
+proc part(b: ^Buf.Buf; n: INT; what: []U8);
+begin
+    if n = 0 then return; end;
+    if b^.len > 0 then Buf.str(b, ", "); end;
+    Buf.str(b, Rbase.num(n));
+    Buf.add(b, ' ');
+    Buf.str(b, what);
+end;
+
+(* Writes the line that ends a run: 'done:', or 'failed:' when a recipe
+   failed or a target was not made, then how many targets were made,
+   failed, not made since they needed one that was not, and were up to
+   date already, leaving out each that is 0, and the time the run took,
+   ms in milliseconds. Keeps the line, less its colour, in lastLine and
+   lastFailed, for the interactive mode. *)
+proc showSummary(made, failed, skipped, current: INT; ms: I64);
+var b: Buf.Buf; hundredths: []U8;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    part(ADR(b), made, "made");
+    part(ADR(b), failed, "failed");
+    part(ADR(b), skipped, "not made");
+    part(ADR(b), current, "up to date");
+    if b.len = 0 then Buf.str(ADR(b), "nothing to do"); end;
+    (* hundredths of a second, which is as fine as a person cares about *)
+    hundredths := Rbase.num(ms mod 1000 div 10 + 100);
+    lastFailed := (failed > 0) or (skipped > 0);
+    if lastFailed then
+        lastLine := Rbase.join(["failed: ", Buf.bytes(ADR(b)), ", in ", Rbase.num(ms div 1000), ".",
+            hundredths[1..3], "s"]);
+        Rterm.paint(Rterm.Style.failure);
+    else
+        lastLine := Rbase.join(["done: ", Buf.bytes(ADR(b)), ", in ", Rbase.num(ms div 1000), ".",
+            hundredths[1..3], "s"]);
+        Rterm.paint(Rterm.Style.success);
+    end;
+    Out.str(lastLine);
+    Rterm.paint(Rterm.Style.plain);
+    Rterm.endLine;
+end;
+
+(* Sets the summary of the last run to line, as the interactive mode
+   tells of a run that was only shown, or of which target it was. *)
+proc setLastLine*(line: []U8; failed: BOOL);
+begin
+    lastLine := line;
+    lastFailed := failed;
+end;
+
+(* -------------------------------------------------------- the signals *)
+
+(* Whether a stop signal came; if one did, it is passed on to every
+   recipe running, once, and kept in caught. *)
+proc stopping: BOOL;
+var cs: []Child; i: INT;
+begin
+    for i := 0 to LEN(Stoppers) - 1 do
+        if Sys.came(Stoppers[i]) and (caught = 0) then
+            caught := Stoppers[i];
+            cs := Children.all(ADR(children));
+            for i := 0 to LEN(cs) - 1 do _ := Sys.kill(cs[i].pid, caught); end;
+            return true;
+        end;
+    end;
+    return caught # 0;
+end;
+
+(* Dies of the signal sig, with its default action, so that whatever
+   ran robbie sees it end by that signal. Exits with 128 + sig, as a
+   shell would report it, should the signal not kill it. *)
+proc die(sig: INT);
+begin
+    Out.flush;
+    _ := Sys.ignore(sig, false);
+    _ := Sys.kill(Sys.pid(), sig);
+    Rt.exit(128 + sig);
+end;
+
+(* --------------------------------------------- starting and collecting *)
+
+(* Starts the script made of lines with '/bin/sh -e -c', and returns
+   the process it runs in, without waiting for it. Stops robbie when it
+   can't start a process at all. *)
+proc start: INT;
+var b: Buf.Buf; ls: [][]U8; script: []U8; i, pid: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    ls := Texts.all(ADR(lines));
+    for i := 0 to LEN(ls) - 1 do
+        if i > 0 then Buf.add(ADR(b), '\n'); end;
+        Buf.str(ADR(b), ls[i]);
+    end;
+    script := Buf.bytes(ADR(b));
+    (* what robbie has written but not yet flushed would otherwise come
+       out after the recipe's own output *)
+    Out.flush;
+    pid := Sys.spawn({path: "/bin/sh", args: ["sh", "-e", "-c", script]});
+    if pid < 0 then Rbase.fatal(Rbase.Nowhere, ["cannot start /bin/sh: ", Rbase.reason(pid)]); end;
+    return pid;
+end;
+
+(* A few words saying how a recipe that ended as how says, with value,
+   failed: its exit status, or the signal that killed it. *)
+proc howFailed(how: Sys.Status; value: INT): []U8;
+begin
+    if how = Sys.Status.killed then return Rbase.join(["killed by signal ", Rbase.num(value)]); end;
+    return Rbase.join(["exit status ", Rbase.num(value)]);
+end;
+
+(* The first input of node n that is broken, or -1 when none is. *)
+proc brokenInput(n: INT): INT;
+var me: Rgraph.Node; es: []INT; i: INT;
+begin
+    me := Rgraph.node(n)^;
+    es := Rgraph.allEdges();
+    for i := me.first to me.first + me.count - 1 do
+        if Rgraph.node(es[i])^.broken then return es[i]; end;
+    end;
+    return -1;
+end;
+
+(* Whether node n, which is waiting, can start: when every input it
+   needs is done. *)
+proc ready(n: INT): BOOL;
+var me: Rgraph.Node; es: []INT; ps: []Phase; i: INT;
+begin
+    me := Rgraph.node(n)^;
+    es := Rgraph.allEdges();
+    ps := Phases.all(ADR(phase));
+    for i := me.first to me.first + me.count - 1 do
+        if ps[es[i]] # done then return false; end;
+    end;
+    return true;
+end;
+
+(* The index in the plan of the first node that is waiting and ready,
+   looking from from on, or -1 when there is none. Moves from past the
+   done and running nodes at its front, which never need looking at
+   again. *)
+proc nextReady(var from: INT): INT;
+var plan: []INT; ps: []Phase; i: INT;
+begin
+    plan := Rgraph.allPlan();
+    ps := Phases.all(ADR(phase));
+    while (from < LEN(plan)) and (ps[plan[from]] # waiting) do INC(from); end;
+    for i := from to LEN(plan) - 1 do
+        if (ps[plan[i]] = waiting) and ready(plan[i]) then return i; end;
+    end;
+    return -1;
+end;
+
+(* Begins making node n, which is ready: reports it and marks it broken
+   when it needs a broken node, fills in its recipe, echoes it unless
+   quiet, and starts it, unless dryRun, which only prints it, quiet or
+   not. A node that is started is added to children and marked running;
+   any other is done at once, and one whose rule has no recipe gets no
+   header and doesn't count as made. *)
+proc launch(n: INT; dryRun, quiet: BOOL);
+var me: Rgraph.Node; r: Rread.Rule; ls: [][]U8; m, j, pid: INT;
+begin
+    Phases.all(ADR(phase))[n] := done;
+    me := Rgraph.node(n)^;
+    r := Rread.allRules()[me.rule];
+    m := brokenInput(n);
+    if m >= 0 then
+        Rbase.report(r.where, ["not making '", me.name, "', since it needs '", Rgraph.node(m)^.name, "'"]);
+        Rgraph.node(n)^.broken := true;
+        INC(skippedCount);
+        return;
+    end;
+    if r.count = 0 then return; end;
+    fill(n, dryRun);
+    showHeader(me.name);
+    if dryRun or not quiet then
+        Rterm.paint(Rterm.Style.faint);
+        ls := Texts.all(ADR(lines));
+        for j := 0 to LEN(ls) - 1 do
+            Out.str(ls[j]);
+            (* ended before the line break, so no style runs past the line *)
+            if j = LEN(ls) - 1 then Rterm.paint(Rterm.Style.plain); end;
+            Rterm.endLine;
+        end;
+    end;
+    if dryRun then return; end;
+    pid := start();
+    Children.push(ADR(children), {pid: pid, node: n});
+    Phases.all(ADR(phase))[n] := running;
+end;
+
+(* Waits for any recipe that is running to end, marks its node done,
+   and takes it off children. Gives the node, and how it ended, as
+   Sys.wait says. A stop signal that breaks into the wait is passed on
+   to the recipes, and the wait goes on. *)
+proc collect: (INT, Sys.Status, INT);
+var cs: []Child; how: Sys.Status; pid, value, i, n: INT;
+begin
+    repeat
+        _ := stopping();
+        pid, how, value := Sys.wait(-1, true);
+        if pid < 0 and (pid # -4) then   (* EINTR *)
+            Rbase.fatal(Rbase.Nowhere, ["cannot wait: ", Rbase.reason(pid)]);
+        end;
+    until (pid > 0) and (how # Sys.Status.stopped);   (* one stopped by Ctrl-Z hasn't ended *)
+    cs := Children.all(ADR(children));
+    i := 0;
+    while cs[i].pid # pid do INC(i); end;
+    n := cs[i].node;
+    Phases.all(ADR(phase))[n] := done;
+    (* the last child takes the place of this one, as the order of
+       children doesn't matter *)
+    cs[i], _ := Children.pop(ADR(children));
+    return n, how, value;
+end;
+
+(* Removes the target of node n, whose recipe has just ended without
+   success, if the recipe changed it, and reports that it did. A task
+   has no file, and a file whose time is what Rgraph read was never
+   touched, so both are left alone. *)
+proc discard(n: INT);
+var me: Rgraph.Node; r: Rread.Rule;
+begin
+    me := Rgraph.node(n)^;
+    r := Rread.allRules()[me.rule];
+    if r.task or (Rgraph.stampOf(r.where, me.name) = me.stamp) then return; end;
+    (* Sys.remove refuses a directory, which is left as it is *)
+    if Sys.remove(me.name) = 0 then
+        Rbase.report(r.where, ["removed half-made '", me.name, "'"]);
+    end;
+end;
+
+(* How many files the goals need that were up to date already: the
+   nodes judge looked at that have a rule and are not stale. *)
+proc upToDate: INT;
+var ns: []Rgraph.Node; i, k: INT;
+begin
+    ns := Rgraph.allNodes();
+    for i := 0 to LEN(ns) - 1 do
+        if ns[i].judged and (ns[i].rule >= 0) and not ns[i].stale then INC(k); end;
+    end;
+    return k;
+end;
+
+(* Makes everything on the plan, each target once everything it needs
+   is done, with up to jobs recipes running at once (see launch for
+   dryRun and quiet). A failed recipe stops robbie from starting any
+   more, and it waits for those still running, unless keepGoing; then
+   the target is marked broken, and so is every target that needs a
+   broken node, which is reported and not made. The target of a recipe
+   that didn't succeed is removed if the recipe changed it. On SIGINT or
+   SIGTERM no more recipes start, and once those running have ended
+   robbie dies of the signal. Unless dryRun, the run ends with its
+   summary. May be called again, after Rgraph has judged afresh.
+   Returns 0 when every recipe that ran succeeded, and ExitFailed
+   otherwise. *)
+proc makePlan*(dryRun, quiet, keepGoing: BOOL; jobs: INT): INT;
+var
+    plan: []INT; how: Sys.Status;
+    from, i, n, value, status: INT;
+    halted: BOOL;   (* a recipe failed, without -k: start no more *)
+    started: I64;
+begin
+    started := Sys.clock();
+    madeCount := 0;
+    failedCount := 0;
+    skippedCount := 0;
+    (* every node done, on every call *)
+    Phases.reset(ADR(phase));
+    Phases.resize(ADR(phase), LEN(Rgraph.allNodes()));
+    plan := Rgraph.allPlan();
+    for i := 0 to LEN(plan) - 1 do Phases.all(ADR(phase))[plan[i]] := waiting; end;
+    for i := 0 to LEN(Stoppers) - 1 do Rterm.stopper(Stoppers[i]); end;
+    caught := 0;
+    while true do
+        (* start all that may; one that needs no process makes room for
+           the next at once *)
+        while not halted and not stopping() and (children.len < jobs) do
+            i := nextReady(from);
+            if i < 0 then break; end;
+            launch(plan[i], dryRun, quiet);
+        end;
+        if children.len = 0 then break; end;
+        n, how, value := collect();
+        if (how = Sys.Status.exited) and (value = 0) then
+            INC(madeCount);
+            continue;
+        end;
+        (* a recipe the signal stopped didn't fail on its own, so only its
+           half-made target is reported *)
+        if caught = 0 then
+            Rterm.paintErr(Rterm.Style.failure);
+            Rbase.report(Rread.allRules()[Rgraph.node(n)^.rule].where,
+                ["'", Rgraph.node(n)^.name, "' failed: ", howFailed(how, value)]);
+            Rterm.paintErr(Rterm.Style.plain);
+            INC(failedCount);
+        end;
+        discard(n);
+        Rgraph.node(n)^.broken := true;
+        status := ExitFailed;
+        if not keepGoing then halted := true; end;
+    end;
+    if caught # 0 then die(caught); end;
+    for i := 0 to LEN(Stoppers) - 1 do Rterm.unstop(Stoppers[i]); end;
+    if not dryRun then
+        showSummary(madeCount, failedCount, skippedCount, upToDate(), (Sys.clock() - started) div 1000000);
+    end;
+    return status;
+end;
+
+begin
+    Phases.init(ADR(phase), Heap.heap);
+    Children.init(ADR(children), Heap.heap);
+    Texts.init(ADR(lines), Heap.heap);
+end Rjob.

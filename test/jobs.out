@@ -1,0 +1,52 @@
+--- Robfile
+ 1| task all: a b
+ 2|     cat a b
+ 3| a:
+ 4|     touch a.on
+ 5|     for i in 1 2 3 4 5 6 7 8 9 10; do test -e b.on && break; sleep 0.2; done
+ 6|     test -e b.on
+ 7|     echo a >{target}
+ 8| b:
+ 9|     touch b.on
+10|     for i in 1 2 3 4 5 6 7 8 9 10; do test -e a.on && break; sleep 0.2; done
+11|     test -e a.on
+12|     echo b >{target}
+$ robbie -q -j2 all
+▸ a
+▸ b
+▸ all
+a
+b
+done: 3 made, in (time)
+exit 0
+$ robbie -q -j1 b a all
+▸ b
+robbie: Robfile:8: 'b' failed: exit status 1
+failed: 1 failed, in (time)
+exit 1
+--- Robfile
+ 1| task all: slow fast later
+ 2| slow:
+ 3|     sleep 1
+ 4|     touch {target}
+ 5| fast:
+ 6|     false
+ 7| later: fast
+ 8|     touch {target}
+$ robbie -q -j2 all
+▸ slow
+▸ fast
+robbie: Robfile:5: 'fast' failed: exit status 1
+failed: 1 made, 1 failed, in (time)
+exit 1
+ls: cannot access 'later': No such file or directory
+slow
+$ robbie -q -k -j3 all
+▸ slow
+▸ fast
+robbie: Robfile:5: 'fast' failed: exit status 1
+robbie: Robfile:7: not making 'later', since it needs 'fast'
+robbie: Robfile:1: not making 'all', since it needs 'fast'
+failed: 1 made, 1 failed, 2 not made, in (time)
+exit 1
+slow

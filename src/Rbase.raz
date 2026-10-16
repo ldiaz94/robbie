@@ -1,0 +1,147 @@
+(* Rbase: what every other module of robbie stands on.
+
+   A place in a robfile, and the messages that name one: report, and
+   fatal, which reports and stops robbie. Nearly every mistake robbie
+   finds is in a robfile, so nearly every one goes through here, and
+   reason turns a system error into words for them.
+
+   And text. robbie lives for as long as a build, which is short, so
+   its text is never freed: keep copies a string onto the heap for
+   good, join makes one string of several, as Pascal's + did, and a
+   slice of text read earlier, a line of a robfile say, is used as it
+   is, since what it points at stays too.
+
+   Standard output is Out's, buffered; standard error is written at
+   once, by err, which flushes standard output first, so that what was
+   printed before a message comes out before it.
+
+   It uses Sys to write to standard error, Out, Rt to end robbie, and
+   Mem, Heap and Str for the text. *)
+module Rbase;
+import Sys, Rt, Out, Mem, Heap, Str;
+
+const
+    (* the exit status for a bad robfile or a bad command line, and so
+       for anything else that stops robbie through fatal *)
+    ExitUsage* = 2;
+
+type
+    (* A place in a robfile, for messages. *)
+    Where* = record
+        path*: []U8;    (* the robfile's name as robbie opened it; "" for a place in no robfile *)
+        line*: INT;     (* the line, counted from 1; 0 for none *)
+    end;
+
+const
+    (* the place of a mistake that is in no robfile *)
+    Nowhere*: Where = {};
+
+(* ------------------------------------------------------------- text *)
+
+(* The parts, one after another, as one new string on the heap, kept
+   for as long as robbie runs. Stops robbie if the heap has no room. *)
+proc join*(parts: [][]U8): []U8;
+var n, at, i: INT; p: ^U8; s: []U8;
+begin
+    for i := 0 to LEN(parts) - 1 do n := n + LEN(parts[i]); end;
+    if n = 0 then return ""; end;
+    p := Mem.alloc(Heap.heap, n, 1);
+    if p = nil then Rt.stop("robbie: out of memory"); end;
+    s := p[0..n];
+    for i := 0 to LEN(parts) - 1 do
+        COPY(s[at..n], parts[i]);
+        at := at + LEN(parts[i]);
+    end;
+    return s;
+end;
+
+(* A copy of s, kept for as long as robbie runs: for text in a buffer
+   that will be used again. *)
+proc keep*(s: []U8): []U8;
+begin
+    return join([s]);
+end;
+
+(* n in decimal, as a new string. *)
+proc num*(n: I64): []U8;
+var digits: [20]U8; k: INT;
+begin
+    digits, k := Str.fromInt(n);
+    return keep(digits[0..k]);
+end;
+
+(* Whether c is a blank inside a line: a space or a tab. *)
+proc isBlank*(c: U8): BOOL;
+begin
+    return (c = ' ') or (c = '\t');
+end;
+
+(* Whether c may stand in a name after its first letter. *)
+proc isNameChar*(c: U8): BOOL;
+begin
+    return Str.isLetter(c) or Str.isDigit(c) or (c = '_');
+end;
+
+(* Whether s is a name: a letter or '_', then any number of letters,
+   digits and '_'. Only a name in braces is a placeholder, so this is
+   also what keeps the shell's own braces out of robbie's way. *)
+proc isName*(s: []U8): BOOL;
+var i: INT;
+begin
+    if (LEN(s) = 0) or Str.isDigit(s[0]) then return false; end;
+    for i := 0 to LEN(s) - 1 do
+        if not isNameChar(s[i]) then return false; end;
+    end;
+    return true;
+end;
+
+(* ---------------------------------------------------------- messages *)
+
+(* s on standard error, once what standard output holds is out. *)
+proc err*(s: []U8);
+begin
+    Out.flush;
+    _ := Sys.write(Sys.stderr, s);
+end;
+
+(* The parts, one after another, about the place w, on standard error,
+   as 'robbie: file:line: message', leaving out whatever part of the
+   place isn't known. For a mistake that takes more than one line, each
+   with a place of its own, like a loop through several rules. *)
+proc report*(w: Where; parts: [][]U8);
+var i: INT;
+begin
+    err("robbie: ");
+    if LEN(w.path) > 0 then
+        err(w.path);
+        if w.line > 0 then err(":"); err(num(w.line)); end;
+        err(": ");
+    end;
+    for i := 0 to LEN(parts) - 1 do err(parts[i]); end;
+    err("\n");
+end;
+
+(* Reports a mistake at w, as report does, and stops robbie with
+   ExitUsage. *)
+proc fatal*(w: Where; parts: [][]U8);
+begin
+    report(w, parts);
+    Rt.exit(ExitUsage);
+end;
+
+(* A few words saying what the error e, minus an errno as Sys gives
+   it, means: robbie's own for the errors a robfile is likely to meet,
+   and the C library's for the rest. *)
+proc reason*(e: INT): []U8;
+begin
+    match -e of
+    | 2: return "no such file or directory";
+    | 13: return "permission denied";
+    | 20: return "not a directory";
+    | 21: return "is a directory";
+    | else:
+    end;
+    return Sys.errorText(e);
+end;
+
+end Rbase.

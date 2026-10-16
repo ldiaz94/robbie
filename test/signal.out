@@ -1,0 +1,40 @@
+--- Robfile
+ 1| task all: half old busy last
+ 2| half:
+ 3|     echo partial >{target}
+ 4|     touch half.on
+ 5|     exec sleep 10
+ 6| old: old.c
+ 7|     touch old.on
+ 8|     exec sleep 10
+ 9| task busy:
+10|     touch busy.on
+11|     exec sleep 10
+12| last: half
+13|     touch {target}
+$ robbie -q -j3 all, then SIGTERM
+exit 143
+▸ half
+▸ old
+▸ busy
+robbie: Robfile:2: removed half-made 'half'
+ls: cannot access 'half': No such file or directory
+ls: cannot access 'last': No such file or directory
+old
+--- Robfile
+ 1| task all: early late
+ 2| early:
+ 3|     false
+ 4| late:
+ 5|     echo partial >{target}
+ 6|     false
+$ robbie -q -k all
+▸ early
+robbie: Robfile:2: 'early' failed: exit status 1
+▸ late
+robbie: Robfile:4: 'late' failed: exit status 1
+robbie: Robfile:4: removed half-made 'late'
+robbie: Robfile:1: not making 'all', since it needs 'early'
+failed: 2 failed, 1 not made, in (time)
+exit 1
+ls: cannot access 'late': No such file or directory

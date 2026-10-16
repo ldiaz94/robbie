@@ -1,0 +1,500 @@
+(* Rread: reading a robfile, from bytes on disk to variables, rules and
+   recipe lines.
+
+   The whole file is read in one piece, and then walked a logical line
+   at a time. A logical line is one or more lines of the file, joined
+   where a line ends in a backslash; it is known by the number of its
+   first line, which is what every message about it quotes. Nothing in
+   the file is copied without need: most lines are slices of the file
+   itself, and a copy is made only when joining has to change the text.
+
+   Each logical line is one of these:
+
+     blank          ignored, and it ends any description
+     # comment      at the left margin, a note that becomes the
+                    description of a rule directly below it
+     name = value   a variable
+     name: inputs   the first line of a rule
+     include file   another robfile, read in place
+     indented       a line of the recipe of the rule above
+
+   A '#' line indented under a rule is a line of its recipe: a comment
+   for the shell, which robbie passes on untouched. A comment never goes
+   on to the next line, even if it ends in a backslash, as in sh.
+
+   Joining differs by kind. The first line of a rule, or a variable, is
+   robbie's own, so robbie joins it: the backslash, the line break and
+   the blanks around them become one space. A recipe line belongs to the
+   shell, so it keeps its backslashes and line breaks, and sh joins it
+   just as it would if the recipe were a script on disk.
+
+   Variables are Rexpand's (setVar). A value is expanded as its line is
+   read, so a placeholder in it means the variable as it stands at that
+   line, and a variable can add to its own earlier value.
+
+   Rules go into a table, in the order of the file. The first line of a
+   rule, 'target: inputs' or 'task target: inputs', and its description
+   are expanded the same way as a value, as they are read. A rule makes
+   one target, and no two plain rules make the same one; a target with
+   a '*' in it makes the rule a pattern, which Rgraph matches against
+   names; it may hold only one, and several patterns may have the same
+   target. The recipe lines go into a second table, each rule's in one
+   run, kept as they were written: their placeholders name the rule
+   being made, so they are filled in only when the recipe runs, by
+   Rjob. A recipe keeps each line's indentation beyond that of its first
+   line, and the blank lines between its lines, since both can matter
+   to sh: the body of a loop reads better indented, and a here-document
+   keeps its blank lines.
+
+   'include file' reads another robfile as if its lines stood where the
+   include does, so its variables, rules and recipes join the same
+   tables, and the file name has its placeholders filled in first. The
+   name is taken from the directory robbie runs in, as every other path
+   in a robfile is, not from that of the file that names it. Reading is
+   one procedure, readFile, that calls itself for an include, keeping
+   where it was in the outer file in its frame. So that a file that
+   includes itself, however indirectly, stops with a message instead of
+   running out of stack, each readFile puts the device and inode of its
+   file on a chain that the next include searches: comparing the names
+   would miss x.rob and ./x.rob being the same file. 'include' is a
+   keyword only when a file name follows it, just as 'task' is, so
+   'include: x' is still a rule and 'include = x' still a variable.
+
+   It uses Rbase for the text and the messages, Rexpand for the
+   variables and to fill in placeholders, Sys and Files to read the
+   file, and Out for printRead. *)
+module Rread;
+import Sys, Out, Buf, Heap, Files, Rbase, Rexpand;
+import Rules := Vec(Rule), Lines := Vec(Line);
+
+type
+    (* A rule: how to make one file or do one task. *)
+    Rule* = record
+        where*: Rbase.Where;    (* where its first line starts *)
+        target*: []U8;          (* the file or task it makes *)
+        task*: BOOL;            (* a task, which makes no file *)
+        pattern*: BOOL;         (* its target holds a '*', which makes it a pattern *)
+        inputs*: []U8;          (* what it needs, as written after the colon, filled in *)
+        note*: []U8;            (* its description, from the comment just above it, filled in *)
+        first*, count*: INT;    (* its recipe: count lines of allRecipes from first *)
+    end;
+
+    (* A line of a recipe. *)
+    Line* = record
+        where*: Rbase.Where;    (* where it starts *)
+        text*: []U8;            (* the line less the recipe's indentation and the blanks at its
+                                   end, its backslashes and line breaks kept; "" when blank *)
+    end;
+
+    (* A logical line of the file being read. *)
+    Logical = record
+        text: []U8;     (* the line without the blanks at either end, its
+                           backslashes and line breaks kept *)
+        at: INT;        (* where text starts in src *)
+        indent: INT;    (* the blanks the line starts with, just before text *)
+        line: INT;      (* the number of its first line *)
+    end;
+
+    (* A robfile being read, one for every readFile still running, each
+       in that readFile's own frame. *)
+    Open = record
+        dev, ino: U64;  (* its device and inode, which name it however its path was spelt *)
+        outer: ^Open;   (* the file that included it; nil for the first *)
+    end;
+
+var
+    (* the rules, in the order of the file *)
+    rules: Rules.Vec;
+    (* the lines of every recipe, in the order of the file, so that each
+       rule's lines sit together *)
+    recipes: Lines.Vec;
+    (* the innermost robfile being read; nil when none is *)
+    reading: ^Open;
+    (* the robfile being read, all of it, and the offset of the next
+       logical line in it *)
+    src: []U8;
+    cursor: INT;
+    (* the number of the line of the file that starts at cursor *)
+    lineNo: INT;
+
+(* The rules, in the order of the file. *)
+proc allRules*: []Rule;
+begin
+    return Rules.all(ADR(rules));
+end;
+
+(* The lines of every recipe; a rule's are count of them from first. *)
+proc allRecipes*: []Line;
+begin
+    return Lines.all(ADR(recipes));
+end;
+
+(* The index in allRules of the rule that makes target, or -1 when
+   there is none. A straight search, as for variables: a robfile's
+   rules number in the tens. *)
+proc findRule*(target: []U8): INT;
+var rs: []Rule; i: INT;
+begin
+    rs := allRules();
+    for i := 0 to LEN(rs) - 1 do
+        if rs[i].target = target then return i; end;
+    end;
+    return -1;
+end;
+
+(* ------------------------------------------------------- reading lines *)
+
+(* The whole of the file path, and its device and inode. Stops robbie
+   with a message at from, the include that named the file, when it
+   can't be read. *)
+proc slurp(from: Rbase.Where; path: []U8): ([]U8, U64, U64);
+var b: Buf.Buf; info: Sys.Info; e: INT;
+begin
+    info, e := Sys.info(path);
+    (* kept for as long as robbie runs, as its lines are slices of it *)
+    Buf.init(ADR(b), Heap.heap);
+    if e = 0 then e := Files.load(path, ADR(b)); end;
+    if e < 0 then Rbase.fatal(from, ["cannot read ", path, ": ", Rbase.reason(e)]); end;
+    return Buf.bytes(ADR(b)), info.dev, info.ino;
+end;
+
+(* Reads the next logical line of src, starting at cursor, into l, and
+   moves cursor and lineNo past it; false at the end of the file. *)
+proc nextLine(l: ^Logical): BOOL;
+var
+    s, e, t: INT;   (* the text runs from s up to t; e is the line break that ends it *)
+    comment, more: BOOL;   (* a comment never goes on to the next line *)
+begin
+    if cursor >= LEN(src) then return false; end;
+    l^.line := lineNo;
+    s := cursor;
+    while (s < LEN(src)) and Rbase.isBlank(src[s]) do INC(s); end;
+    l^.indent := s - cursor;
+    comment := (s < LEN(src)) and (src[s] = '#');
+    (* find the line break that ends the logical line, stepping over
+       each one that follows a backslash *)
+    e := s;
+    repeat
+        while (e < LEN(src)) and (src[e] # '\n') do INC(e); end;
+        (* e > s keeps the look at src[e - 1] inside this line *)
+        more := not comment and (e < LEN(src)) and (e > s) and (src[e - 1] = '\\');
+        if more then
+            INC(e);
+            INC(lineNo);
+        end;
+    until not more;
+    t := e;
+    while (t > s) and Rbase.isBlank(src[t - 1]) do DEC(t); end;
+    l^.text := src[s..t];
+    l^.at := s;
+    (* step over the line break, if the file didn't just end *)
+    cursor := e + 1;
+    INC(lineNo);
+    return true;
+end;
+
+(* s with each backslash-newline, and the blanks on either side of it,
+   turned into one space: s itself when it has none, and otherwise a
+   new string. *)
+proc joined(s: []U8): []U8;
+var
+    b: Buf.Buf;
+    i, k, start: INT;   (* s[start..] is still to be copied; a piece to copy ends at k *)
+    r: []U8;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    while i < LEN(s) - 1 do
+        if (s[i] = '\\') and (s[i + 1] = '\n') then
+            k := i;
+            while (k > start) and Rbase.isBlank(s[k - 1]) do DEC(k); end;
+            i := i + 2;
+            while (i < LEN(s)) and Rbase.isBlank(s[i]) do INC(i); end;
+            Buf.str(ADR(b), s[start..k]);
+            Buf.add(ADR(b), ' ');
+            start := i;
+        else
+            INC(i);
+        end;
+    end;
+    if start = 0 then return s; end;
+    Buf.str(ADR(b), s[start..LEN(s)]);
+    r := Buf.bytes(ADR(b));
+    (* a line that ended in a backslash with nothing after it *)
+    if r[LEN(r) - 1] = ' ' then r := r[0..LEN(r) - 1]; end;
+    r := Rbase.keep(r);
+    return r;
+end;
+
+(* ------------------------------------------------- the parts of a robfile *)
+
+(* The text of the comment line text, without the '#' and the blanks
+   after it. *)
+proc commentText(text: []U8): []U8;
+var i: INT;
+begin
+    i := 1;
+    while (i < LEN(text)) and Rbase.isBlank(text[i]) do INC(i); end;
+    return text[i..LEN(text)];
+end;
+
+(* Sets the variable on the line text, at w, whose '=' is at byte eq.
+   The name is what comes before the '=', and must be a name that is
+   not one of robbie's own placeholders; the value is the rest, with
+   blanks at either end removed and its placeholders filled in. *)
+proc readVariable(w: Rbase.Where; text: []U8; eq: INT);
+var k, v: INT; name: []U8;
+begin
+    k := eq;
+    while (k > 0) and Rbase.isBlank(text[k - 1]) do DEC(k); end;
+    v := eq + 1;
+    while (v < LEN(text)) and Rbase.isBlank(text[v]) do INC(v); end;
+    name := text[0..k];
+    if not Rbase.isName(name) then
+        Rbase.fatal(w, ["'", name, "' is not a variable name"]);
+    end;
+    if Rexpand.isOwnPlaceholder(name) then
+        Rbase.fatal(w, ["'", name, "' is robbie's own placeholder, not a variable name"]);
+    end;
+    Rexpand.setVar(name, Rexpand.expanded(w, text[v..LEN(text)]), false);
+end;
+
+(* Adds the rule whose first line is text, at w, with its colon at byte
+   colon, and note the text of the comment directly above it, or "".
+   Before the colon is the target, after 'task' for a task; after it
+   are the inputs. Both, and the note, have their placeholders filled
+   in. The target must come out as one word, and no other rule may make
+   it. *)
+proc readRule(w: Rbase.Where; text: []U8; colon: INT; note: []U8);
+var
+    r: Rule;
+    s, e, i: INT;   (* the target runs from s up to e; i is where the inputs start *)
+    above: Rbase.Where;
+    rs: []Rule;
+begin
+    e := colon;
+    while (e > 0) and Rbase.isBlank(text[e - 1]) do DEC(e); end;
+    (* 'task' is a keyword only when a target follows it: 'task: x'
+       makes a file called task *)
+    r.task := (e > 5) and (text[0..4] = "task") and Rbase.isBlank(text[4]);
+    if r.task then
+        s := 5;
+        while Rbase.isBlank(text[s]) do INC(s); end;
+    end;
+    i := colon + 1;
+    while (i < LEN(text)) and Rbase.isBlank(text[i]) do INC(i); end;
+    r.target := Rexpand.expanded(w, text[s..e]);
+    r.inputs := Rexpand.expanded(w, text[i..LEN(text)]);
+    if LEN(r.target) = 0 then Rbase.fatal(w, ["a rule needs a target before its colon"]); end;
+    for i := 0 to LEN(r.target) - 1 do
+        if Rbase.isBlank(r.target[i]) then
+            Rbase.fatal(w, ["a rule makes one target, not '", r.target, "'"]);
+        end;
+    end;
+    (* a pattern's one '*' is its stem; a second would leave it unclear
+       which part of a name matched which *)
+    r.pattern := Rexpand.stars(r.target) > 0;
+    if Rexpand.stars(r.target) > 1 then
+        Rbase.fatal(w, ["a pattern has one '*', not '", r.target, "'"]);
+    end;
+    (* patterns may share a target, since the first whose inputs can be
+       had wins; a plain target can never look like a pattern *)
+    i := -1;
+    if not r.pattern then i := findRule(r.target); end;
+    if i >= 0 then
+        rs := allRules();
+        Rbase.fatal(w, ["'", r.target, "' already has a rule, at ", rs[i].where.path, ":",
+            Rbase.num(rs[i].where.line)]);
+    end;
+    (* a note is a whole line, the one just above *)
+    above := w;
+    DEC(above.line);
+    r.note := Rexpand.expanded(above, note);
+    r.where := w;
+    r.first := recipes.len;
+    Rules.push(ADR(rules), r);
+end;
+
+(* Adds a line of text, at w, to the recipe of the last rule. *)
+proc addLine(w: Rbase.Where; text: []U8);
+var rs: []Rule;
+begin
+    Lines.push(ADR(recipes), {where: w, text: text});
+    rs := allRules();
+    INC(rs[LEN(rs) - 1].count);
+end;
+
+(* Adds the recipe line l, at w, to the last rule. Of the blanks it
+   starts with, those it shares with margin, the indentation of the
+   recipe's first line, are dropped, and the rest kept. The first line
+   sets margin. When the recipe already has a line, the blanks blank
+   lines just above, from line from on, are added first, as empty
+   lines. *)
+proc addRecipeLine(w: Rbase.Where; l: Logical; var margin: []U8; blanks, from: INT);
+var rs: []Rule; line: []U8; at: Rbase.Where; i, k: INT;
+begin
+    (* the whole line, indentation and all, is a slice of src *)
+    line := src[l.at - l.indent..l.at + LEN(l.text)];
+    rs := allRules();
+    if rs[LEN(rs) - 1].count = 0 then
+        margin := line[0..l.indent];
+    else
+        at := w;
+        for i := 0 to blanks - 1 do
+            at.line := from + i;
+            addLine(at, "");
+        end;
+    end;
+    while (k < l.indent) and (k < LEN(margin)) and (line[k] = margin[k]) do INC(k); end;
+    addLine(w, line[k..LEN(line)]);
+end;
+
+(* The offset in the logical line text of the file name after
+   'include', or 0 when the line is not an include. It is one when it
+   starts with the word include and blanks, and what follows them is
+   neither ':' nor '=', which would make it a rule or a variable. *)
+proc includeAt(text: []U8): INT;
+var i: INT;
+begin
+    if (LEN(text) < 8) or (text[0..7] # "include") or not Rbase.isBlank(text[7]) then
+        return 0;
+    end;
+    (* text has no blanks at its end, so something follows them *)
+    i := 8;
+    while Rbase.isBlank(text[i]) do INC(i); end;
+    if (text[i] = ':') or (text[i] = '=') then return 0; end;
+    return i;
+end;
+
+(* Reads the robfile path, relative to the working directory, reading
+   each file it includes in place. origin is the include that named it,
+   or Nowhere for the first file. src, cursor and lineNo are the outer
+   file's again when it returns. Stops robbie with a message at the
+   first mistake. *)
+proc readFile(origin: Rbase.Where; path: []U8);
+var
+    open: Open;             (* this file, on the chain of files being read *)
+    q: ^Open;
+    outerSrc: []U8;         (* the outer file's place, put back on the way out *)
+    outerCursor, outerLine: INT;
+    w: Rbase.Where;         (* where the logical line l is *)
+    l: Logical;
+    note, margin, name: []U8;
+    inRule: BOOL;
+    i, blanks, from: INT;
+begin
+    outerSrc := src;
+    outerCursor := cursor;
+    outerLine := lineNo;
+    src, open.dev, open.ino := slurp(origin, path);
+    (* a file already on the chain includes itself, however indirectly *)
+    q := reading;
+    while q # nil do
+        if (q^.dev = open.dev) and (q^.ino = open.ino) then
+            Rbase.fatal(origin, ["include loop: ", path, " is already being read"]);
+        end;
+        q := q^.outer;
+    end;
+    open.outer := reading;
+    reading := ADR(open);
+    cursor := 0;
+    lineNo := 1;
+    w.path := path;
+    (* note: the comment just read, while it is still directly above;
+       inRule: whether an indented line here belongs to a rule; margin:
+       the indentation of the first line of the recipe being read;
+       blanks and from: how many blank lines since the last recipe line,
+       and the first of them *)
+    while nextLine(ADR(l)) do
+        w.line := l.line;
+        if LEN(l.text) = 0 then
+            note := "";
+            if blanks = 0 then from := w.line; end;
+            INC(blanks);
+            continue;
+        end;
+        if (l.indent > 0) and inRule then
+            addRecipeLine(w, l, margin, blanks, from);
+        elsif l.text[0] = '#' then
+            note := commentText(l.text);
+            blanks := 0;
+            continue;
+        elsif l.indent > 0 then
+            Rbase.fatal(w, ["indented line with no rule above it"]);
+        else
+            l.text := joined(l.text);
+            i := includeAt(l.text);
+            if i > 0 then
+                (* an include ends the rule above it, as a variable does *)
+                inRule := false;
+                name := Rexpand.expanded(w, l.text[i..LEN(l.text)]);
+                if LEN(name) = 0 then Rbase.fatal(w, ["include needs a file name"]); end;
+                readFile(w, name);
+            else
+                (* a rule or a variable, whichever of ':' and '=' comes first *)
+                while (i < LEN(l.text)) and (l.text[i] # ':') and (l.text[i] # '=') do INC(i); end;
+                if i = LEN(l.text) then
+                    Rbase.fatal(w, ["expected 'name = value', 'target: inputs' or 'include file'"]);
+                end;
+                inRule := l.text[i] = ':';
+                if inRule then readRule(w, l.text, i, note); else readVariable(w, l.text, i); end;
+            end;
+        end;
+        note := "";
+        blanks := 0;
+    end;
+    reading := open.outer;
+    src := outerSrc;
+    cursor := outerCursor;
+    lineNo := outerLine;
+end;
+
+(* Reads the robfile path, relative to the working directory, and the
+   files it includes. Stops robbie with a message at the first
+   mistake. *)
+proc readRobfile*(path: []U8);
+begin
+    readFile(Rbase.Nowhere, path);
+end;
+
+(* Prints the variables and rules that were read, in the form of a
+   robfile: first every variable with its final value, then the rules,
+   each with its description as a comment above it and its recipe lines
+   indented by four spaces. This is -p, which the tests use to see what
+   robbie read. *)
+proc printRead*;
+var vs: []Rexpand.Var; rs: []Rule; ls: []Line; i, j: INT;
+begin
+    vs := Rexpand.allVars();
+    for i := 0 to LEN(vs) - 1 do
+        Out.str(vs[i].name);
+        Out.str(" =");
+        if LEN(vs[i].value) > 0 then Out.char(' '); end;
+        Out.str(vs[i].value);
+        Out.ln;
+    end;
+    rs := allRules();
+    ls := allRecipes();
+    for i := 0 to LEN(rs) - 1 do
+        (* a blank line before every rule but the first thing printed *)
+        if (LEN(vs) > 0) or (i > 0) then Out.ln; end;
+        if LEN(rs[i].note) > 0 then Out.str("# "); Out.str(rs[i].note); Out.ln; end;
+        if rs[i].task then Out.str("task "); end;
+        Out.str(rs[i].target);
+        Out.char(':');
+        if LEN(rs[i].inputs) > 0 then Out.char(' '); end;
+        Out.str(rs[i].inputs);
+        Out.ln;
+        for j := rs[i].first to rs[i].first + rs[i].count - 1 do
+            (* a blank line in a recipe is printed empty, without indentation *)
+            if LEN(ls[j].text) > 0 then Out.str("    "); end;
+            Out.str(ls[j].text);
+            Out.ln;
+        end;
+    end;
+end;
+
+begin
+    Rules.init(ADR(rules), Heap.heap);
+    Lines.init(ADR(recipes), Heap.heap);
+end Rread.

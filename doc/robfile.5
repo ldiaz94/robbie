@@ -1,0 +1,455 @@
+.Dd September 28, 2026
+.Dt ROBFILE 5
+.Os
+.Sh NAME
+.Nm robfile
+.Nd what robbie makes, and how
+.Sh DESCRIPTION
+A robfile tells
+.Xr robbie 1
+what can be made in a directory: which file or task each rule makes,
+what it needs, and the shell script, its recipe, that makes it.
+It also holds variables, and can include other robfiles.
+.Pp
+The file is read a line at a time.
+A line ending in a backslash goes on to the next, as in
+.Xr sh 1 ;
+it is one logical line, known by the number of its first line.
+Spaces and tabs at the end of a line do not matter; at its start they
+indent it.
+Each logical line is one of:
+.Bl -tag -width "name: inputs" -offset indent
+.It blank
+Ignored.
+.It Li # Ar comment
+A comment, at the left margin.
+.It Ar name Li = Ar value
+A variable.
+.It Ar target Ns Li : Ar inputs
+The first line of a rule.
+.It Li include Ar file
+Another robfile, read in place.
+.It indented
+A line of the recipe of the rule above.
+.El
+.Pp
+A line at the margin that is not a comment or an include is a rule or
+a variable by whichever of
+.Ql \&:
+and
+.Ql =
+comes first, so
+.Ql path = /bin:/usr/bin
+is a variable and
+.Ql prog: a=b
+a rule.
+Outside a recipe, a backslash, the line break after it and the blanks
+around them become one space.
+.Ss Comments and descriptions
+A comment is a whole line, and never goes on to the next, even when it
+ends in a backslash.
+A comment on the line just above a rule is that rule's description,
+which
+.Xr robbie 1
+shows in its listing.
+Other comments are ignored.
+.Ss Variables
+.Bd -literal -offset indent
+name = value
+.Ed
+.Pp
+sets the variable
+.Ar name .
+A name is a letter or underscore followed by letters, digits and
+underscores.
+The value is the rest of the line, less the blanks at either end, and
+may be empty.
+.Pp
+Placeholders in the value are filled in as the line is read, from the
+variables as they stand at that line, so
+.Ql flags = {flags} -g
+adds to the value of
+.Va flags
+set above it.
+A variable set again keeps its place and takes the new value.
+.Pp
+A variable set on the command line, as in
+.Ql robbie prefix=/usr ,
+is fixed: the robfile's lines setting it are ignored.
+.Ss Rules
+.Bd -literal -offset indent
+target: inputs
+    recipe
+.Ed
+.Pp
+A rule makes one
+.Ar target
+from its
+.Ar inputs ,
+a list of words, which may be empty.
+The target is a file, and is out of date, and remade, when it is
+missing, when it is older than one of its inputs, or when one of its
+inputs is out of date itself.
+Times are compared to the nanosecond, and a file exactly as old as an
+input is up to date.
+An input that no rule makes must exist.
+.Bd -literal -offset indent
+task target: inputs
+    recipe
+.Ed
+.Pp
+makes a task instead: a target that is not a file, whose recipe runs
+whenever it is asked for.
+A task is always out of date, so a file that needs one is remade every
+time too.
+.Ql task
+is a word of its own only when a target follows it, so
+.Ql task:
+is a rule for a file called
+.Pa task .
+.Pp
+Placeholders in the target, the inputs and the description are filled
+in as the line is read, as in a variable's value.
+The target must then be one word, and no two rules may make the same
+target, whether file or task, except patterns, described below.
+.Pp
+No target may need itself, whether directly, as in
+.Ql prog: prog ,
+or through the inputs of other rules.
+Such a loop can never be made, and is an error wherever it is in the
+robfile, even when nothing asked for goes through it.
+.Ss Globs
+An input of a plain rule with a
+.Ql *
+in it is a glob, and stands for the files it matches, sorted by name,
+as in
+.Xr sh 1 :
+.Ql *.c
+matches every file ending in
+.Pa .c ,
+except those starting with a dot, and
+.Ql src/*.c
+those in
+.Pa src .
+Only
+.Ql *
+is special;
+.Ql \&? ,
+.Ql \&[
+and
+.Ql \e
+are letters like any other.
+A glob is matched each time
+.Xr robbie 1
+runs, after placeholders are filled in, so a variable can hold one.
+.Pp
+A glob that matches nothing is an error, wherever it is in the
+robfile, since it is nearly always a typo.
+A glob can only name files that exist, not files still to be made.
+.Pp
+A rule needs each input once, in the order first named, however many
+times it is named or matched, so in
+.Ql prog: main.c *.c
+the file
+.Pa main.c
+comes first, and once.
+.Ss Patterns
+A rule whose target has a
+.Ql *
+in it is a pattern:
+.Bd -literal -offset indent
+*.o: *.c config.h
+    cc -c {input} -o {target}
+.Ed
+.Pp
+makes any file whose name fits
+.Ql *.o ,
+such as
+.Pa main.o ,
+and the
+.Ql *
+in each of its inputs stands for the same text, the stem, here
+.Ql main ,
+so
+.Pa main.o
+needs
+.Pa main.c
+and
+.Pa config.h .
+The stem is at least one byte, and may hold a
+.Ql / ,
+and the directory can change with it, as in
+.Ql build/*.o: src/*.c .
+A pattern has one
+.Ql * .
+In its inputs a
+.Ql *
+is the stem, never a glob.
+.Pp
+A name that no plain rule makes is matched against the patterns, in
+the order of the robfile, and the first that fits it, and whose inputs
+all exist or can be made in turn, makes it.
+So several patterns can make the same kind of file, as in
+.Bd -literal -offset indent
+*.o: *.c
+    cc -c {input}
+*.o: *.s
+    as {input} -o {target}
+.Ed
+.Pp
+where an object is made from its C file if there is one, and
+otherwise from its assembler.
+Patterns can make each other's inputs, as when a C file is itself made
+from a grammar, but a pattern is not tried again for anything it needs,
+however indirectly, so the search always ends.
+A plain rule always wins over a pattern.
+A name that only a pattern makes can be named on the command line.
+.Ss Recipes
+The recipe is the indented lines under a rule: a shell script, which
+.Xr robbie 1
+hands to
+.Xr sh 1
+whole, not a line at a time, as
+.Ql /bin/sh -e -c Ar script .
+So a loop can span lines, a
+.Ql cd
+carries on to the lines after it, and the first command that fails
+stops the recipe, and the build.
+Tabs and spaces both indent.
+.Pp
+Each line of a recipe loses the indentation it shares with the
+recipe's first line, and keeps the rest, byte for byte, so the body of
+a loop can be indented further; a tab is not shared with spaces.
+Blank lines between recipe lines are kept, for here-documents; those
+before the first line and after the last are not.
+A line ending in a backslash keeps it, with its line break, for the
+shell to join.
+.Pp
+An indented comment is a line of the recipe, for the shell.
+A comment at the margin is the robfile's, and is dropped; the recipe
+goes on under it.
+A variable, a rule or an include at the margin ends the recipe.
+.Pp
+Placeholders in a recipe are filled in only when it runs, after the
+whole robfile has been read, so a recipe sees the final value of each
+variable, wherever the recipe stands.
+Each recipe is checked for unknown names before anything runs.
+A recipe can also use robbie's own placeholders, which name parts of
+the rule being made:
+.Bl -tag -width "{inputs}" -offset indent
+.It Li {target}
+the file or task being made
+.It Li {input}
+its first input, or nothing when it has none
+.It Li {inputs}
+all its inputs, each once, in the order first named, separated by
+spaces
+.It Li {newer}
+those of its inputs that are newer than the target, as they stand when
+the recipe runs; for a target that does not exist yet, or a task, that
+is all of them, and an input that is a task always counts as newer
+.It Li {stem}
+what the
+.Ql *
+stood for, in the recipe of a pattern, and an error anywhere else
+.El
+.Ss Placeholders
+A name in braces,
+.Ql {name} ,
+is a placeholder, and is replaced by the value of the variable
+.Ar name .
+Apart from comprehensions, described below, nothing else is one, so
+shell code passes through untouched:
+.Ql {}
+and
+.Ql { print $1 }
+are not placeholders, and a brace straight after a
+.Ql $ ,
+as in
+.Ql ${HOME} ,
+belongs to the shell.
+robbie never touches
+.Ql $ .
+Two opening braces,
+.Ql {{ ,
+stand for one, for the rare shell code that looks like a placeholder.
+.Pp
+Placeholders are filled in in one pass, from left to right: a value
+that has been filled in is not looked at again, so braces in it are
+kept.
+A value set on the command line is used as it is, and its braces are
+kept too.
+.Pp
+An unknown name is an error, since it is nearly always a typo, and the
+message suggests the closest known name when one is close enough.
+The names
+.Va target ,
+.Va input ,
+.Va inputs ,
+.Va newer
+and
+.Va stem
+are robbie's own: they name parts of the rule being made, and can be
+used only in a recipe.
+They cannot be variable names.
+.Ss Comprehensions
+A comprehension is a placeholder that stands for a list:
+.Bl -tag -width "{*.o for *.c in name}" -offset indent
+.It Li {*.o for *.c}
+a
+.Pa .o
+for each
+.Pa .c
+file on disk
+.It Li {*.o for *.c in Ar name Ns Li }
+a
+.Pa .o
+for each word of the placeholder
+.Ar name
+that ends in
+.Pa .c
+.El
+.Pp
+The words are in the order of Python's list comprehensions.
+The
+.Ql *
+means what it means in a pattern, the stem, so the directory can
+change too:
+.Ql {build/*.o for src/*.c} .
+Both words must hold a
+.Ql * ,
+the second only one, and they are separated from
+.Ql for
+and
+.Ql in
+by blanks, with none just inside the braces; anything else is not a
+comprehension, and passes through untouched.
+.Pp
+The first form finds the files as a glob does, sorted by name, and it
+is an error when there are none.
+In the second, words that don't fit are left out, and the list may
+come out empty;
+.Ar name
+can be a variable, or, in a recipe, one of robbie's own placeholders,
+as in
+.Ql {*.d for *.c in inputs} .
+A comprehension can name files that don't exist yet, which a glob
+can't, so a program can need an object for each of its sources, and
+a pattern make them.
+.Ss Including other robfiles
+.Bd -literal -offset indent
+include file
+.Ed
+.Pp
+reads the robfile
+.Ar file
+as if its lines stood in place of the include: its variables and rules
+join the others, in order, and an included file can include others.
+Placeholders in
+.Ar file
+are filled in first.
+It is found from the directory
+.Xr robbie 1
+runs in, as every other path in a robfile is, not from the directory
+of the file that includes it.
+A file that includes itself, however indirectly, is an error.
+.Pp
+.Ql include
+is a word of its own only when a file name follows it, so
+.Ql include: x
+is a rule and
+.Ql include = x
+a variable.
+.Ss Coming from make
+A plain Makefile turns into a robfile by hand, a line at a time:
+.Bl -column "$(patsubst %.c,%.o,$(SRC))" "{*.o for *.c in SRC}" -offset indent
+.It Sy make Ta Sy robfile
+.It Li $@ Ta Li {target}
+.It Li $< Ta Li {input}
+.It Li $^ Ta Li {inputs}
+.It Li $? Ta Li {newer}
+.It Li $* Ta Li {stem}
+.It Li $(X) , Li ${X} Ta Li {X}
+.It Li $$ Ta Li $
+.It Li X := y Ta Li X = y
+.It Li X += y Ta Li X = {X} y
+.It Li .PHONY: t Ta Li task t:
+.It Li %.o: %.c Ta Li *.o: *.c
+.It Li $(wildcard *.c) Ta Li *.c
+.It Li $(SRC:.c=.o) Ta Li {*.o for *.c in SRC}
+.It Li $(patsubst %.c,%.o,$(SRC)) Ta Li {*.o for *.c in SRC}
+.It Li include f Ta Li include f
+.El
+.Pp
+A recipe is one script, so its lines no longer need
+.Ql ;\e
+to share a shell, and they may be indented with spaces.
+A variable is filled in as its line is read, so it cannot use one set
+further down, as make's
+.Ql =
+can.
+There is nothing for make's functions, conditionals, recursive calls
+or implicit rules: write them out, or leave them to the shell.
+.Sh EXAMPLES
+The robfile that builds robbie itself:
+.Bd -literal -offset indent
+# Robfile for robbie: build it, test it, install it.
+
+raz    = raz -Werror
+prefix = /usr/local
+pages  = doc/robbie.1 doc/robfile.5
+
+# The program itself.
+build/robbie: src/*.raz
+    mkdir -p build
+    {raz} -o {target} src/Robbie.raz
+
+# A release tarball.
+robbie.tar.gz: build/robbie {pages} README.md
+    tar czf {target} {inputs}
+
+# Run the tests, then check the man pages.
+task test: build/robbie
+    for t in test/*.sh; do
+        sh "$t" | diff -u "${t%.sh}.out" - || exit 1
+    done
+    # groff exits 0 even when it warns, so any output is a failure
+    out=$(groff -mdoc -ww -z {pages} 2>&1)
+    test -z "$out" || { echo "$out"; exit 1; }
+
+# Install into {prefix}.
+task install: build/robbie
+    install -Dm755 build/robbie "$DESTDIR{prefix}/bin/robbie"
+    install -Dm644 doc/robbie.1 "$DESTDIR{prefix}/share/man/man1/robbie.1"
+    install -Dm644 doc/robfile.5 "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove what install put there.
+task uninstall:
+    rm -f "$DESTDIR{prefix}/bin/robbie" \e
+          "$DESTDIR{prefix}/share/man/man1/robbie.1" \e
+          "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove everything the build made.
+task clean:
+    rm -rf build robbie.tar.gz
+.Ed
+.Pp
+The robfile for dwm, a C program built from an object for each C
+file:
+.Bd -literal -offset indent
+# Robfile for dwm: a C program, one object per source file.
+
+cc = cc -Os
+
+# The window manager.
+dwm: {*.o for *.c}
+    {cc} -o {target} {inputs} -lX11 -lXft
+
+# Each object from its C file.
+*.o: *.c config.h
+    {cc} -c {input} -o {target}
+.Ed
+.Sh SEE ALSO
+.Xr robbie 1 ,
+.Xr make 1 ,
+.Xr sh 1

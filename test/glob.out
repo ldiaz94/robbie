@@ -1,0 +1,60 @@
+--- Robfile
+ 1| srcs = src/*.c
+ 2| task all: main.c *.c
+ 3|     echo {inputs}
+ 4| task sub: {srcs} notes.txt
+ 5|     echo {inputs}
+ 6| task odd: x?.c y[1].c
+ 7|     echo {inputs}
+ 8| task wild: *[1].c
+ 9|     echo {inputs}
+$ robbie -p
+srcs = src/*.c
+
+task all: main.c *.c
+    echo {inputs}
+
+task sub: src/*.c notes.txt
+    echo {inputs}
+
+task odd: x?.c y[1].c
+    echo {inputs}
+
+task wild: *[1].c
+    echo {inputs}
+exit 0
+$ robbie all sub odd wild
+▸ all
+echo main.c a.c b.c x?.c y[1].c
+main.c a.c b.c x?.c y[1].c
+▸ sub
+echo src/one.c src/two.c notes.txt
+src/one.c src/two.c notes.txt
+▸ odd
+echo x?.c y[1].c
+x?.c y[1].c
+▸ wild
+echo y[1].c
+y[1].c
+done: 4 made, in (time)
+exit 0
+$ robbie -q all
+▸ all
+main.c a.c b.c c.c x?.c y[1].c
+done: 1 made, in (time)
+exit 0
+--- Robfile
+ 1| task all:
+ 2|     echo all
+ 3| prog: *.cc
+ 4|     link
+$ robbie all
+robbie: Robfile:3: 'prog' needs '*.cc', which matches no file
+exit 2
+$ robbie -p
+task all:
+    echo all
+
+prog: *.cc
+    link
+exit 0

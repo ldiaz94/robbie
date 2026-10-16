@@ -1,0 +1,19 @@
+(* Rsig: whether a signal is ignored.
+
+   A program started in the background by a script, or under nohup,
+   starts with some signals ignored, and robbie leaves those alone, as
+   a shell does, rather than catching them. Sys can set a signal's
+   action but not say what it is, so this asks the kernel, through
+   rt_sigaction with no new action; that is Linux's own, so the module
+   is too. *)
+module Rsig;
+
+(* Whether the signal sig is ignored now. *)
+proc ignored*(sig: INT): BOOL;
+var act: [4]U64;   (* struct sigaction: its handler first, 1 for SIG_IGN *)
+begin
+    _ := SYSCALL(13, sig, 0, ADR(act), 8);              (* rt_sigaction *)
+    return act[0] = 1;
+end;
+
+end Rsig.

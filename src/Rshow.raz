@@ -1,0 +1,572 @@
+(* Rshow: what the user sees of a robfile: the listing, printed when
+   robbie is given no target, and the interactive mode.
+
+   The listing is the front door to a repository: everything a robfile
+   can do, in three parts. First the tasks, then the files, each with
+   its description and, dimmed, the inputs as written in the robfile; a
+   yellow mark stands before each file that is out of date. Last come
+   the variables, with their values. Above it all is robbie's name and
+   the robfile's path, with the home directory written as '~', as a
+   shell prompt would.
+
+   Each part is a table, and its columns line up across the tasks and
+   the files, so the eye can run down the descriptions and the inputs.
+   The names take as much room as the longest; the descriptions take as
+   much as the longest, or what is left of the width, and the inputs
+   whatever remains after that. Text that doesn't fit is cut, and ends
+   in an ellipsis, so a line never wraps. The variables are laid out in
+   as many columns as fit. Widths are counted in characters, not bytes,
+   since descriptions may be in any language: a byte that continues a
+   UTF-8 character takes no column of its own.
+
+   The interactive mode (-i) is the listing again, less the variables
+   and the patterns, which name no file of their own, drawn on the
+   terminal's alternate screen with a cursor on one line. Typing filters
+   the list by name; Enter makes the target under the cursor, back on
+   the screen robbie was started from, and then the marks are judged
+   afresh and the list comes back, with the last run's summary below
+   it. When the list is longer than the screen it scrolls, so the
+   cursor always shows.
+
+   Every look is asked of Rterm by name, so the listing piped somewhere
+   is the same text without colour, which is what the tests check.
+
+   It uses Rbase for the text, Rread and Rexpand for the rules and
+   variables, Rgraph for what is out of date, Rjob to make a target
+   picked in the interactive mode, Rterm for the size, the styles, raw
+   mode and the keys, Sys for the working directory and the home
+   directory, and Out for what it prints. *)
+module Rshow;
+import Sys, Out, Heap, Str, Rbase, Rread, Rexpand, Rgraph, Rjob, Rterm;
+import Ints := Vec(INT);
+
+const
+    (* the margin before each name: a column for the cursor's pointer,
+       one for the mark of a stale file, and a blank *)
+    Lead = 3;
+    (* the blanks between two columns of the rules *)
+    Gap = 2;
+    (* the blanks between two columns of the variables *)
+    VarGap = 4;
+    (* the mark before a file that is out of date *)
+    StaleMark = "●";
+    (* what stands before the inputs of a rule, and the columns it takes,
+       which are fewer than its bytes *)
+    Arrow = "← ";
+    ArrowCols = 2;
+    (* what ends a piece of text that was cut to fit *)
+    Ellipsis = "…";
+    (* what points at the line the cursor is on, in the interactive mode *)
+    Pointer = "›";
+    (* the most that can be typed into the filter; a name longer than
+       the screen is wide is not worth typing out *)
+    MaxFilter = 60;
+
+var
+    (* the rules the interactive mode offers, as indices in
+       Rread.allRules: the tasks, then the files, each in the order of
+       the robfile, leaving out patterns and whatever the filter doesn't
+       match *)
+    picks: Ints.Vec;
+    (* how many of picks are tasks, which come first *)
+    pickTasks: INT;
+    (* what has been typed to filter the list: filter[0..filterLen];
+       empty for no filter *)
+    filter: [MaxFilter]U8;
+    filterLen: INT;
+    (* the index in picks of the line the cursor is on *)
+    picked: INT;
+    (* the first line of the list that shows, when it is too long for
+       the screen, counting the headings and the blank line between the
+       parts *)
+    top: INT;
+
+(* ---------------------------------------------------- measuring and cutting *)
+
+(* Whether c continues a UTF-8 character, and so takes no column. *)
+proc continues(c: U8): BOOL;
+begin
+    return (c >= 80H) and (c <= 0BFH);
+end;
+
+(* The number of columns s takes: its bytes, less those that continue a
+   UTF-8 character. *)
+proc columns(s: []U8): INT;
+var i, n: INT;
+begin
+    for i := 0 to LEN(s) - 1 do
+        if not continues(s[i]) then INC(n); end;
+    end;
+    return n;
+end;
+
+(* The longest start of s that takes at most n columns, never splitting
+   a character. *)
+proc prefix(s: []U8; n: INT): []U8;
+var i, cols: INT;
+begin
+    while i < LEN(s) do
+        (* a character starts here; stop if it would be column n + 1 *)
+        if not continues(s[i]) then
+            if cols = n then break; end;
+            INC(cols);
+        end;
+        INC(i);
+    end;
+    return s[0..i];
+end;
+
+(* Writes n blanks; nothing when n isn't above 0. *)
+proc pad(n: INT);
+begin
+    while n > 0 do
+        Out.char(' ');
+        DEC(n);
+    end;
+end;
+
+(* Writes s in at most n columns: whole when it fits, and otherwise cut
+   short, ending in an ellipsis. Returns the number of columns
+   written. *)
+proc putCut(s: []U8; n: INT): INT;
+var cols: INT;
+begin
+    if n <= 0 then return 0; end;
+    cols := columns(s);
+    if cols <= n then
+        Out.str(s);
+        return cols;
+    end;
+    Out.str(prefix(s, n - 1));
+    Out.str(Ellipsis);
+    return n;
+end;
+
+(* -------------------------------------------------------------- the title *)
+
+(* The full path of the robfile robfile, which is taken from the
+   working directory unless it starts with a '/', with the home
+   directory written as '~'. *)
+proc whereIs(robfile: []U8): []U8;
+var full, dir, home: []U8; e, n: INT;
+begin
+    full := robfile;
+    if (LEN(robfile) = 0) or (robfile[0] # '/') then
+        dir, e := Sys.workDir();
+        (* a directory too deep to name: the path as given will do *)
+        if e = 0 then
+            if LEN(dir) > 1 then
+                full := Rbase.join([dir, "/", robfile]);
+            else
+                full := Rbase.join([dir, robfile]);
+            end;
+        end;
+    end;
+    (* home, when it is a whole directory at the start of the path *)
+    home := Sys.env("HOME");
+    n := LEN(home);
+    if (n > 1) and (n < LEN(full)) and (full[n] = '/') and (full[0..n] = home) then
+        return Rbase.join(["~", full[n..LEN(full)]]);
+    end;
+    return full;
+end;
+
+(* Writes the first line of the listing, robbie's name and the path of
+   robfile, cut to width. *)
+proc showTitle(robfile: []U8; width: INT);
+begin
+    (* the blanks either side of the name are part of its look *)
+    Rterm.paint(Rterm.Style.title);
+    Out.str(" robbie ");
+    Rterm.paint(Rterm.Style.plain);
+    Out.char(' ');
+    (* the path has what the nine columns before it leave *)
+    _ := putCut(whereIs(robfile), width - 9);
+    Rterm.endLine;
+end;
+
+(* -------------------------------------------------------------- the rules *)
+
+(* Whether rule r makes a file that is out of date: when it is a plain
+   rule, not a task, and the node it makes is stale. *)
+proc isStale(r: INT): BOOL;
+var rule: Rread.Rule; n: INT;
+begin
+    rule := Rread.allRules()[r];
+    if rule.task or rule.pattern then return false; end;
+    n := Rgraph.findNode(rule.target);
+    return (n >= 0) and Rgraph.node(n)^.stale;
+end;
+
+(* Writes the line of the listing for rule r, whose name takes nameW
+   columns and whose description descW, in a line of width. The name is
+   painted as a task's or a file's, and the inputs are faint. When
+   isPicked, the line is the one the cursor is on, in the interactive
+   mode: a pointer stands in its first column, and the name is shown in
+   reverse. *)
+proc showRule(r, nameW, descW, width: INT; isPicked: BOOL);
+var rule: Rread.Rule; used, room: INT;
+begin
+    rule := Rread.allRules()[r];
+    if isPicked then Out.str(Pointer); else Out.char(' '); end;
+    if isStale(r) then
+        Rterm.paint(Rterm.Style.stale);
+        Out.str(StaleMark);
+        Rterm.paint(Rterm.Style.plain);
+    else
+        Out.char(' ');
+    end;
+    Out.char(' ');
+    if isPicked then
+        Rterm.paint(Rterm.Style.cursor);
+    elsif rule.task then
+        Rterm.paint(Rterm.Style.taskName);
+    else
+        Rterm.paint(Rterm.Style.fileName);
+    end;
+    used := Lead + putCut(rule.target, nameW);
+    Rterm.paint(Rterm.Style.plain);
+    if LEN(rule.note) > 0 then
+        pad(Lead + nameW + Gap - used);
+        used := Lead + nameW + Gap + putCut(rule.note, width - Lead - nameW - Gap);
+    end;
+    if LEN(rule.inputs) > 0 then
+        (* the inputs start in one column for every rule, past the
+           longest description, or straight after the names when none
+           has one *)
+        room := Lead + nameW + Gap;
+        if descW > 0 then room := room + descW + Gap; end;
+        if used > room then room := used + Gap; end;
+        (* padded only when there is room for at least one letter *)
+        if width - room - ArrowCols > 0 then
+            pad(room - used);
+            Rterm.paint(Rterm.Style.faint);
+            Out.str(Arrow);
+            _ := putCut(rule.inputs, width - room - ArrowCols);
+            Rterm.paint(Rterm.Style.plain);
+        end;
+    end;
+    Rterm.endLine;
+end;
+
+(* Writes the heading of a part of the listing, with a blank before
+   it. *)
+proc showHeading(caption: []U8);
+begin
+    Out.char(' ');
+    Rterm.paint(Rterm.Style.heading);
+    Out.str(caption);
+    Rterm.paint(Rterm.Style.plain);
+end;
+
+(* Writes the part of the listing headed caption, holding every rule
+   that is a task when tasks, and every other rule otherwise, in the
+   order of the robfile, with a blank line above it. Writes nothing
+   when there is no such rule. See showRule for the widths. *)
+proc showRules(caption: []U8; tasks: BOOL; nameW, descW, width: INT);
+var rs: []Rread.Rule; r: INT; any: BOOL;
+begin
+    rs := Rread.allRules();
+    for r := 0 to LEN(rs) - 1 do
+        if rs[r].task = tasks then any := true; end;
+    end;
+    if not any then return; end;
+    Rterm.endLine;
+    showHeading(caption);
+    Rterm.endLine;
+    for r := 0 to LEN(rs) - 1 do
+        if rs[r].task = tasks then showRule(r, nameW, descW, width, false); end;
+    end;
+end;
+
+(* ---------------------------------------------------------- the variables *)
+
+(* The number of columns variable v takes as 'name = value'; the 3 is
+   for ' = '. *)
+proc cellWidth(v: Rexpand.Var): INT;
+begin
+    return columns(v.name) + 3 + columns(v.value);
+end;
+
+(* Writes the part of the listing that holds the variables, each as
+   'name = value', in as many columns as fit in width, a row at a time,
+   with a blank line and a heading above them. Writes nothing when there
+   are none. *)
+proc showVars(width: INT);
+var vs: []Rexpand.Var; i, cellW, cols, avail, used: INT;
+begin
+    vs := Rexpand.allVars();
+    if LEN(vs) = 0 then return; end;
+    for i := 0 to LEN(vs) - 1 do
+        if cellWidth(vs[i]) > cellW then cellW := cellWidth(vs[i]); end;
+    end;
+    avail := width - Lead;
+    cols := (avail + VarGap) div (cellW + VarGap);
+    if cols < 1 then cols := 1; end;
+    Rterm.endLine;
+    showHeading("variables");
+    Rterm.endLine;
+    for i := 0 to LEN(vs) - 1 do
+        if i mod cols = 0 then pad(Lead); else pad(cellW + VarGap - used); end;
+        (* made whole, so it can be cut like any other text *)
+        used := putCut(Rbase.join([vs[i].name, " = ", vs[i].value]), avail);
+        if (i mod cols = cols - 1) or (i = LEN(vs) - 1) then Rterm.endLine; end;
+    end;
+end;
+
+(* ------------------------------------------------------------ the listing *)
+
+(* The columns the names and descriptions of the rules take in a line
+   of lineW: as many as the longest, or as many as the line leaves. Only
+   the rules that can be picked count when pickable, which leaves out
+   the patterns. *)
+proc measure(pickable: BOOL; lineW: INT): (INT, INT);
+var rs: []Rread.Rule; r, nameW, descW: INT;
+begin
+    rs := Rread.allRules();
+    for r := 0 to LEN(rs) - 1 do
+        if not (pickable and rs[r].pattern) then
+            if columns(rs[r].target) > nameW then nameW := columns(rs[r].target); end;
+            if columns(rs[r].note) > descW then descW := columns(rs[r].note); end;
+        end;
+    end;
+    (* a name never takes the whole line, and a description only what
+       the name leaves *)
+    if nameW > lineW - Lead - 1 then nameW := lineW - Lead - 1; end;
+    if descW > lineW - Lead - nameW - Gap then descW := lineW - Lead - nameW - Gap; end;
+    if descW < 0 then descW := 0; end;
+    return nameW, descW;
+end;
+
+(* Writes the listing of the robfile robfile, which has been read and
+   whose graph has been built and surveyed: its title, then its tasks,
+   its files and its variables, laid out in the width of the
+   terminal. *)
+proc showListing*(robfile: []U8);
+var nameW, descW, lineW: INT;
+begin
+    lineW := Rterm.width();
+    nameW, descW := measure(false, lineW);
+    showTitle(robfile, lineW);
+    showRules("tasks", true, nameW, descW, lineW);
+    showRules("files", false, nameW, descW, lineW);
+    showVars(lineW);
+end;
+
+(* -------------------------------------------------- the interactive mode *)
+
+(* Whether name holds the filter, ignoring the case of ASCII letters; an
+   empty filter is held by every name. *)
+proc holds(name: []U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(name) - filterLen do
+        if Str.eqFold(name[i..i + filterLen], filter[0..filterLen]) then return true; end;
+    end;
+    return false;
+end;
+
+(* Fills picks with the rules that can be picked and that the filter
+   lets through, tasks first, sets pickTasks, and puts the cursor back
+   on the first, with the list scrolled to its top. *)
+proc gather;
+var rs: []Rread.Rule; r: INT; tasks: BOOL;
+begin
+    rs := Rread.allRules();
+    Ints.reset(ADR(picks));
+    tasks := true;
+    repeat
+        for r := 0 to LEN(rs) - 1 do
+            if (rs[r].task = tasks) and not rs[r].pattern and holds(rs[r].target) then
+                Ints.push(ADR(picks), r);
+            end;
+        end;
+        if tasks then pickTasks := picks.len; end;
+        tasks := not tasks;
+    until tasks;
+    picked := 0;
+    top := 0;
+end;
+
+(* The line of the list that pick i is on, counting from 0: under the
+   heading of the tasks, or, for a file, under the tasks, a blank line
+   and the heading of the files. *)
+proc lineOf(i: INT): INT;
+begin
+    if (i < pickTasks) or (pickTasks = 0) then return 1 + i; end;
+    return 3 + i;
+end;
+
+(* Draws the interactive listing over the screen: the title, as much of
+   the list as fits, scrolled so that the cursor shows, and below it
+   what can be typed, or the filter, and the last run's summary. *)
+proc draw(robfile: []U8);
+var lineW, nameW, descW, rows, lines, line, i: INT;
+begin
+    lineW := Rterm.width();
+    nameW, descW := measure(true, lineW);
+    (* the title and a blank line above, and three lines below *)
+    rows := Rterm.height() - 5;
+    if rows < 1 then rows := 1; end;
+    lines := 0;
+    if picks.len > 0 then lines := lineOf(picks.len - 1) + 1; end;
+    (* scrolled no further than needed to show the cursor, and its
+       heading when it is the first of its part *)
+    line := lineOf(picked);
+    if (picked = 0) or (picked = pickTasks) then DEC(line); end;
+    if line < top then top := line; end;
+    if lineOf(picked) >= top + rows then top := lineOf(picked) - rows + 1; end;
+    if top > lines - rows then top := lines - rows; end;
+    if top < 0 then top := 0; end;
+    Rterm.home;
+    showTitle(robfile, lineW);
+    Rterm.endLine;
+    line := top;
+    while (line < top + rows) and (line < lines) do
+        (* i is the pick on this line, or -1 for the blank line between
+           the parts, or -2 for a heading *)
+        i := line - 1;
+        if (pickTasks > 0) and (line > pickTasks) then
+            if line = pickTasks + 1 then i := -1; else i := line - 3; end;
+        end;
+        if (line = 0) or ((pickTasks > 0) and (line = pickTasks + 2)) then i := -2; end;
+        if i >= 0 then
+            showRule(Ints.all(ADR(picks))[i], nameW, descW, lineW, i = picked);
+        else
+            if i = -2 then
+                if (line = 0) and (pickTasks > 0) then showHeading("tasks"); else showHeading("files"); end;
+            end;
+            Rterm.endLine;
+        end;
+        INC(line);
+    end;
+    Rterm.endLine;
+    (* the lines below are cut to the width too, so none wraps and
+       pushes the list up *)
+    if filterLen > 0 then
+        if picks.len = 0 then
+            _ := putCut(Rbase.join([" filter: ", filter[0..filterLen], "  (nothing matches)"]), lineW);
+        else
+            _ := putCut(Rbase.join([" filter: ", filter[0..filterLen]]), lineW);
+        end;
+    else
+        Rterm.paint(Rterm.Style.faint);
+        _ := putCut(" ↑↓ move  enter run  n dry run  q quit  type to filter", lineW);
+        Rterm.paint(Rterm.Style.plain);
+    end;
+    Rterm.endLine;
+    if LEN(Rjob.lastLine) > 0 then
+        Out.str(" last: ");
+        if Rjob.lastFailed then
+            Rterm.paint(Rterm.Style.failure);
+        else
+            Rterm.paint(Rterm.Style.success);
+        end;
+        _ := putCut(Rjob.lastLine, lineW - 7);
+        Rterm.paint(Rterm.Style.plain);
+    end;
+    Rterm.endLine;
+    Rterm.clearBelow;
+    Out.flush;
+end;
+
+(* Makes the target of rule r on the screen robbie was started from, as
+   if it had been named on the command line, or with dryRun only shows
+   what would run; then waits for a key and goes back to the list, with
+   every mark judged afresh. See interact for the other flags. A missing
+   input is reported, as with -k, and doesn't end the interactive mode.
+   The run's summary, led by the target's name, is shown below the list
+   from then on. *)
+proc runPick(r: INT; dryRun, quiet, keepGoing: BOOL; jobs: INT);
+var target: []U8;
+begin
+    target := Rread.allRules()[r].target;
+    Rterm.screen(false);
+    Rterm.raw(false);
+    Rgraph.forget;
+    Rgraph.want(target);
+    Rgraph.judge(true);
+    _ := Rjob.makePlan(dryRun, quiet, keepGoing, jobs);
+    if dryRun then Rjob.setLastLine("shown, not run", false); end;
+    (* the summary alone wouldn't say which target it was about *)
+    Rjob.setLastLine(Rbase.join([target, ": ", Rjob.lastLine]), Rjob.lastFailed);
+    Rterm.paint(Rterm.Style.faint);
+    Out.str("press a key to go back");
+    Rterm.paint(Rterm.Style.plain);
+    Out.flush;
+    Rterm.raw(true);
+    (* a change of size is not the key asked for *)
+    while Rterm.readKey() = Rterm.KeyResize do end;
+    Rterm.endLine;
+    Rgraph.forget;
+    Rgraph.survey;
+    Rterm.screen(true);
+end;
+
+(* Moves the cursor that many lines, down for more than 0, stopping at either
+   end of the list. *)
+proc move(lines: INT);
+begin
+    picked := picked + lines;
+    if picked >= picks.len then picked := picks.len - 1; end;
+    if picked < 0 then picked := 0; end;
+end;
+
+(* Runs the interactive mode (-i) on the robfile robfile, which has
+   been read, and whose graph has been built and surveyed: shows the
+   tasks and files, and lets the user pick one to make, again and
+   again, until they quit. The arrows, or j and k, move the cursor;
+   Enter makes the target under it, with dryRun only showing what would
+   run, and n always only shows it; q quits. Other letters filter the
+   list, and while a filter is typed j, k, n and q are letters like any
+   other: Backspace takes one back, and Esc clears it, or quits when
+   there is none. Ctrl-C quits at once. quiet, keepGoing and jobs are
+   passed on to Rjob.makePlan. The terminal is always put back as it
+   was; a signal that stopped robbie is sent again after that. *)
+proc interact*(robfile: []U8; dryRun, quiet, keepGoing: BOOL; jobs: INT);
+var key: INT; typing, quit: BOOL;
+begin
+    Rterm.raw(true);
+    Rterm.screen(true);
+    gather;
+    while not quit do
+        draw(robfile);
+        key := Rterm.readKey();
+        typing := filterLen > 0;
+        match key of
+        | Rterm.KeyStop, Rterm.KeyCtrlC: quit := true;
+        | Rterm.KeyResize: Rterm.clearScreen;   (* drawn again, in the new size *)
+        | Rterm.KeyUp: move(-1);
+        | Rterm.KeyDown: move(1);
+        | Rterm.KeyEnter:
+            if picks.len > 0 then runPick(Ints.all(ADR(picks))[picked], dryRun, quiet, keepGoing, jobs); end;
+        | Rterm.KeyEsc:
+            if typing then filterLen := 0; gather; else quit := true; end;
+        | Rterm.KeyBack, Rterm.KeyDelete:
+            if typing then DEC(filterLen); gather; end;
+        | 'q': quit := not typing;
+        | 'j': if not typing then move(1); end;
+        | 'k': if not typing then move(-1); end;
+        | 'n':
+            if not typing and (picks.len > 0) then
+                runPick(Ints.all(ADR(picks))[picked], true, quiet, keepGoing, jobs);
+            end;
+        | else:
+        end;
+        (* any other character is typed into the filter, and so are the
+           letters above once a filter is being typed *)
+        if (key >= 32) and (key <= 126) and (filterLen < MaxFilter)
+                and (typing or ((key # 'q') and (key # 'j') and (key # 'k') and (key # 'n'))) then
+            filter[filterLen] := U8(key);
+            INC(filterLen);
+            gather;
+        end;
+    end;
+    Rterm.screen(false);
+    Rterm.raw(false);
+    Rterm.resend;
+end;
+
+begin
+    Ints.init(ADR(picks), Heap.heap);
+end Rshow.

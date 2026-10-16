@@ -1,0 +1,342 @@
+(* Rterm: the terminal: whether there is one, how big it is, and colour.
+
+   robbie's output is meant for two readers. On a terminal it is for a
+   person, and colour helps them find their way; through a pipe it is
+   for a script or a test, and must be plain text, the same text less
+   the escape codes. So colour is decided once, for standard output and
+   standard error separately, since either can be a pipe while the other
+   is a terminal: it is on for one that is a terminal, unless NO_COLOR
+   is set to anything but the empty string, as https://no-color.org
+   asks.
+
+   The other modules never write an escape code themselves. They ask
+   for a style by what it is for, "a task's name" or "a failure", with
+   paint, and this module alone knows what that looks like. Changing the
+   palette is a change to one table here, and the plain version of every
+   screen is the coloured one with the styles left out, which is what
+   the tests see.
+
+   The size is that of the terminal on standard output. When that is not
+   a terminal it is taken as 80 by 24, as ls(1) does, so that a listing
+   piped or saved looks as it would on a common terminal and a test sees
+   the same lines on every machine.
+
+   The interactive mode (-i) draws its list on the terminal's alternate
+   screen, so the screen robbie was started from is left as it was, and
+   reads keys one at a time in raw mode. Raw mode doesn't turn a line
+   feed into a carriage return and a line feed on output, so a line
+   drawn there ends with endLine, which writes both. The arrow keys come
+   as escape sequences, 'ESC [ A' and the like; a terminal sends a
+   sequence all at once, so an ESC with nothing straight after it is the
+   Esc key itself. While raw, Ctrl-C is a key like any other, and
+   SIGINT, SIGTERM and SIGHUP only note that robbie must stop, so the
+   loop reading keys can put the terminal back first; the signal is then
+   sent again, with its default action, by resend. SIGWINCH, when the
+   terminal is resized, likewise only breaks into the read, and readKey
+   returns it as a key of its own, so the list is drawn again in the new
+   size. However else robbie ends while raw, even through fatal, a
+   procedure Rt runs at exit puts the terminal back.
+
+   A signal ignored when robbie started is left so, as a shell leaves
+   it: stopper and unstop, which Rjob uses too, take and give back only
+   the others.
+
+   It uses Sys for the terminal, the keys and the signals, Rsig to tell
+   an ignored signal, Out for standard output and Rbase for standard
+   error. Rshow is its main user; Rjob paints its echoed recipes and its
+   failures through it, and Robbie asks it whether -i has a terminal. *)
+module Rterm;
+import Sys, Rt, Out, Rbase, Rsig;
+
+type
+    (* What a piece of text is, as far as its look goes. *)
+    Style* = (
+        plain,      (* anything with no look of its own *)
+        title,      (* the program's name, atop the listing *)
+        heading,    (* the heading of a part of the listing *)
+        taskName,   (* the name of a task *)
+        fileName,   (* the name of a file a rule makes *)
+        faint,      (* what matters less: inputs, echoed recipes *)
+        stale,      (* the mark of a file that is out of date *)
+        header,     (* the line that starts a target being made *)
+        failure,    (* a recipe that failed, and the run it spoilt *)
+        success,    (* the summary of a run that went well *)
+        cursor      (* the line picked in the interactive listing *)
+    );
+
+const
+    (* the SGR parameters of each style, in the order of Style: the
+       numbers between 'ESC [' and 'm'; each starts from 0, so no style
+       leaks into the next *)
+    Looks: [11][]U8 = [
+        "0",        (* plain: as the terminal is set *)
+        "0;1;7",    (* title: bold, in reverse *)
+        "0;1",      (* heading: bold *)
+        "0;1;36",   (* taskName: bold cyan *)
+        "0;1;32",   (* fileName: bold green *)
+        "0;2",      (* faint: dim *)
+        "0;1;33",   (* stale: bold yellow *)
+        "0;1;34",   (* header: bold blue *)
+        "0;1;31",   (* failure: bold red *)
+        "0;32",     (* success: green *)
+        "0;7"       (* cursor: reverse *)
+    ];
+
+    (* the keys readKey returns that are not a byte of their own; any
+       other key is the value of its byte *)
+    KeyUp* = 256;       (* the up arrow *)
+    KeyDown* = 257;     (* the down arrow *)
+    KeyOther* = 258;    (* an escape sequence robbie has no use for *)
+    KeyStop* = 259;     (* not a key: a signal, or the end of input *)
+    KeyResize* = 260;   (* not a key: the terminal changed size *)
+    (* keys that are a byte of their own, named for clarity *)
+    KeyCtrlC* = 3;
+    KeyBack* = 8;       (* Ctrl-H, which some terminals send for Backspace *)
+    KeyEnter* = 13;
+    KeyEsc* = 27;
+    KeyDelete* = 127;   (* what most terminals send for Backspace *)
+
+    (* the signals that stop robbie while it is raw *)
+    StopSignals: [3]INT = [Sys.sigInt, Sys.sigTerm, Sys.sigHup];
+    (* how long to wait after an ESC for the rest of a sequence, in
+       milliseconds; a terminal sends a whole sequence in one write *)
+    EscWait = 30;
+
+var
+    (* whether standard output, and standard error, get colour; set
+       once, by setup *)
+    colourOut, colourErr: BOOL;
+    (* the signal that came while raw, which resend sends again; 0 for
+       none *)
+    stopSignal: INT;
+    (* whether the procedure that puts the terminal back is registered *)
+    prepared: BOOL;
+    (* whether the terminal is raw now, and whether the alternate screen
+       is showing, on which each line clears what is left of it as it
+       ends *)
+    isRaw, onScreen: BOOL;
+
+(* Decides whether standard output and standard error get colour: each
+   does when it is a terminal and NO_COLOR is unset or empty. Call it
+   once, before anything is painted. *)
+proc setup*;
+begin
+    if LEN(Sys.env("NO_COLOR")) > 0 then return; end;
+    colourOut := Sys.isTerminal(Sys.stdout);
+    colourErr := Sys.isTerminal(Sys.stderr);
+end;
+
+(* The width, in columns, of the terminal standard output goes to, read
+   afresh each time, since a terminal can be resized; 80 when standard
+   output is not a terminal, or it won't say. *)
+proc width*: INT;
+var cols: INT;
+begin
+    cols, _ := Sys.termSize(Sys.stdout);
+    return cols;
+end;
+
+(* The height, in lines, of the terminal standard output goes to, read
+   afresh each time; 24 when it won't say. *)
+proc height*: INT;
+var rows: INT;
+begin
+    _, rows := Sys.termSize(Sys.stdout);
+    return rows;
+end;
+
+(* The escape code of style s. *)
+proc look(s: Style): []U8;
+begin
+    return Rbase.join(["\x1b[", Looks[INT(s)], "m"]);
+end;
+
+(* Makes what follows on standard output look like s, when it gets
+   colour. Painting plain ends any style. *)
+proc paint*(s: Style);
+begin
+    if colourOut then Out.str(look(s)); end;
+end;
+
+(* paint, for standard error. *)
+proc paintErr*(s: Style);
+begin
+    if colourErr then Rbase.err(look(s)); end;
+end;
+
+(* Whether both standard input and standard output are a terminal, as
+   the interactive mode needs. *)
+proc isTerminal*: BOOL;
+begin
+    return Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout);
+end;
+
+(* ------------------------------------------------------------ signals *)
+
+(* Takes the signal sig, for a system call it comes during to fail
+   with -4 and Sys.came to say so, unless it was ignored, which it then
+   stays. *)
+proc stopper*(sig: INT);
+begin
+    if not Rsig.ignored(sig) then _ := Sys.handle(sig); end;
+end;
+
+(* Gives the signal sig back what it does at first, unless it is
+   ignored. *)
+proc unstop*(sig: INT);
+begin
+    if not Rsig.ignored(sig) then _ := Sys.ignore(sig, false); end;
+end;
+
+(* ------------------------------------------------ raw mode and the screen *)
+
+(* Shows the alternate screen, cleared, with the cursor hidden, when
+   on; or goes back to the screen robbie was started from, with the
+   cursor showing. Does nothing when it is already so. *)
+proc screen*(on: BOOL);
+begin
+    if on = onScreen then return; end;
+    if on then
+        Out.str("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+    else
+        Out.str("\x1b[?25h\x1b[?1049l");
+    end;
+    Out.flush;
+    onScreen := on;
+end;
+
+proc raw*(on: BOOL); forward;
+
+(* Puts the terminal back as robbie found it, if it isn't already: run
+   at exit, so this happens however robbie ends. *)
+proc putBack;
+begin
+    screen(false);
+    raw(false);
+end;
+
+(* Makes the terminal raw, when on, reading keys one at a time without
+   echo or signal keys, and takes StopSignals and SIGWINCH; or puts it
+   back as it was, and the signals with it. Does nothing when it is
+   already so. The first call registers putBack with Rt, for when robbie
+   ends. *)
+proc raw*(on: BOOL);
+var i: INT;
+begin
+    if on = isRaw then return; end;
+    if on then
+        if not prepared then
+            _ := Rt.atExit(putBack);
+            prepared := true;
+        end;
+        _ := Sys.rawMode(Sys.stdin);
+        for i := 0 to LEN(StopSignals) - 1 do stopper(StopSignals[i]); end;
+        _ := Sys.handle(Sys.sigWinch);
+    else
+        Sys.restoreMode(Sys.stdin);
+        for i := 0 to LEN(StopSignals) - 1 do unstop(StopSignals[i]); end;
+        _ := Sys.ignore(Sys.sigWinch, false);
+    end;
+    isRaw := on;
+end;
+
+(* Ends a line of standard output; on the alternate screen, first
+   clears what is left of it, which the last drawing may have filled;
+   and while raw, returns the carriage, which the terminal no longer
+   does. *)
+proc endLine*;
+begin
+    if onScreen then Out.str("\x1b[K"); end;
+    if isRaw then Out.char('\r'); end;
+    Out.ln;
+end;
+
+(* Moves to the top left corner of the screen, to draw it again. *)
+proc home*;
+begin
+    Out.str("\x1b[H");
+end;
+
+(* Clears the screen from the cursor down, below the last line drawn. *)
+proc clearBelow*;
+begin
+    Out.str("\x1b[J");
+end;
+
+(* Clears the whole screen, for a drawing that must start afresh, as
+   after the terminal changed size and may have moved what was on it. *)
+proc clearScreen*;
+begin
+    Out.str("\x1b[2J");
+end;
+
+(* -------------------------------------------------------------- keys *)
+
+(* Whether a stop signal came; if one did, it is kept for resend. *)
+proc stopped: BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(StopSignals) - 1 do
+        if Sys.came(StopSignals[i]) then stopSignal := StopSignals[i]; end;
+    end;
+    return stopSignal # 0;
+end;
+
+(* The next byte of standard input, and true; or false when a stop
+   signal came, input has ended, or reading fails. A read another signal
+   breaks into is tried again. *)
+proc readByte: (U8, BOOL);
+var c: [1]U8; n: INT;
+begin
+    repeat
+        if stopped() then return 0, false; end;
+        n := Sys.read(Sys.stdin, c);
+    until n # -4;   (* EINTR *)
+    return c[0], n = 1;
+end;
+
+(* Waits for a key, in raw mode, and returns it: KeyUp or KeyDown for
+   an arrow, KeyOther for any other escape sequence, KeyStop when a stop
+   signal came or input ended, KeyResize when the terminal changed size,
+   and otherwise the byte read. A change of size in the middle of an
+   escape sequence is kept for the next call. *)
+proc readKey*: INT;
+var c: [1]U8; b: U8; n: INT; ok: BOOL;
+begin
+    repeat
+        if stopped() then return KeyStop; end;
+        if Sys.came(Sys.sigWinch) then return KeyResize; end;
+        n := Sys.read(Sys.stdin, c);
+    until n # -4;   (* EINTR *)
+    if n # 1 then return KeyStop; end;
+    if c[0] # KeyEsc then return c[0]; end;
+    if not Sys.ready(Sys.stdin, EscWait) then return KeyEsc; end;
+    b, ok := readByte();
+    if not ok then return KeyStop; end;
+    (* 'ESC [' starts a sequence, as does 'ESC O' for arrows in the
+       terminal's application mode; anything else is a key with Alt *)
+    if (b # '[') and (b # 'O') then return KeyOther; end;
+    (* a sequence ends with a byte from '@' to '~' *)
+    repeat
+        b, ok := readByte();
+        if not ok then return KeyStop; end;
+    until (b >= '@') and (b <= '~');
+    if b = 'A' then return KeyUp; end;
+    if b = 'B' then return KeyDown; end;
+    return KeyOther;
+end;
+
+(* Sends the stop signal that came while raw, if one did, to robbie
+   itself, with its default action, so that robbie dies of it as it
+   would have; exits with 128 and its number should it not. The terminal
+   must have been put back first. *)
+proc resend*;
+begin
+    if stopSignal = 0 then return; end;
+    Out.flush;
+    _ := Sys.ignore(stopSignal, false);
+    _ := Sys.kill(Sys.pid(), stopSignal);
+    Rt.exit(128 + stopSignal);
+end;
+
+end Rterm.

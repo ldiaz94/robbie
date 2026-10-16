@@ -1,0 +1,415 @@
+.Dd September 28, 2026
+.Dt ROBBIE 1
+.Os
+.Sh NAME
+.Nm robbie
+.Nd make what is out of date, and show what can be done
+.Sh SYNOPSIS
+.Nm
+.Op Fl iknpq
+.Op Fl C Ar dir
+.Op Fl f Ar file
+.Op Fl j Ar n
+.Op Ar name Ns = Ns Ar value ...
+.Op Ar target ...
+.Sh DESCRIPTION
+.Nm
+reads a robfile, which says what each file is made from and how, and
+makes the named
+.Ar targets ,
+running only the recipes whose files are out of date.
+With no
+.Ar target ,
+it lists everything the robfile can make.
+.Pp
+Each target is made after everything it needs, one at a time unless
+.Fl j
+allows more.
+A recipe has its placeholders filled in, is echoed to standard output,
+and is run as one script with
+.Ql /bin/sh -e -c ,
+so the first command in it that fails stops it.
+It inherits the standard input, output and error of
+.Nm ,
+and its environment.
+Before anything runs, every recipe in the robfile is checked for
+unknown placeholders, so a typo stops
+.Nm
+at once rather than halfway through a build.
+When a recipe fails,
+.Nm
+reports it and stops, unless
+.Fl k
+is given.
+Recipes already running are waited for either way.
+When a recipe does not succeed, and it has changed its target file,
+the file is removed, so that the next run makes it again rather than
+taking a half-made file for up to date.
+A directory, and a file the recipe never touched, are left alone.
+.Pp
+On
+.Dv SIGINT
+or
+.Dv SIGTERM ,
+.Nm
+passes the signal on to every recipe running, starts no more, waits
+for them, removes the files they had begun to make, and then dies of
+the same signal.
+A signal that was ignored when
+.Nm
+started stays ignored by
+.Nm
+itself; each recipe starts with every signal as it is at first.
+.Pp
+Each target made starts with a header, its name after a small
+triangle, above its recipe; a target with no recipe has none.
+The run ends with a line saying how it went:
+.Pp
+.Dl done: 3 made, 1 up to date, in 0.42s
+.Pp
+or, when a recipe failed or a target was not made,
+.Pp
+.Dl failed: 1 made, 1 failed, 2 not made, in 0.05s
+.Pp
+counting the targets made, those whose recipe failed, those not made
+because something they need was not, and the files already up to date,
+leaving out each count that is 0.
+On a terminal the headers are coloured, echoed recipes are dim, and
+failures are red.
+.Pp
+The options are as follows:
+.Bl -tag -width "-f file"
+.It Fl C Ar dir
+Change to
+.Ar dir
+before doing anything else.
+.It Fl f Ar file
+Read
+.Ar file ,
+relative to
+.Ar dir
+when
+.Fl C
+is given, instead of
+.Pa Robfile .
+.It Fl h , Fl \-help
+Print a usage message and exit.
+.It Fl i
+Interactive: pick a target from the listing and make it, as described
+under
+.Sx Interactive mode .
+No
+.Ar target
+may be named with it, and standard input and output must be a
+terminal.
+.It Fl j Ar n
+Run up to
+.Ar n
+recipes at once, from 1 to 1000.
+The default is 1.
+A target starts once everything it needs is made; of those ready, the
+one that would be made first one at a time starts first.
+The output of recipes running together can interleave.
+.It Fl k
+Keep going: after a recipe fails, or when an input is missing and no
+rule makes it, make whatever does not depend on it.
+Each target that is not made because of it is reported.
+.It Fl n
+Print the recipes of the targets that are out of date, in the order
+they would run, with their placeholders filled in, without running
+them.
+Each has its header, and there is no summary.
+An input that would be made counts as newer than its target, for
+.Cm {newer} .
+.It Fl p
+Print what
+.Nm
+read, as a robfile, and make nothing: first every variable with its
+final value, then each rule with its description above it and its
+recipe indented by four spaces.
+Placeholders are filled in everywhere but in recipes, which are shown as
+written, less the indentation of their first line.
+Lines joined by a backslash are shown joined, except in recipes, which
+keep them for the shell.
+The robfile is not checked for loops.
+.It Fl q
+Quiet: do not echo recipe lines.
+The headers and the summary are printed all the same.
+With
+.Fl n
+they are printed all the same.
+.El
+.Pp
+Flags can be bundled, as in
+.Fl kn ,
+and a value can follow its flag directly, as in
+.Fl j Ns 4 .
+The first word that is not a flag ends them, and so does
+.Fl - .
+.Pp
+An operand of the form
+.Ar name Ns = Ns Ar value
+sets the variable
+.Ar name
+to
+.Ar value ,
+blanks and braces included: placeholders in it are not filled in.
+The robfile cannot change a variable set this way.
+It also goes into the environment of every recipe, as
+.Ev name ,
+so
+.Ql robbie install DESTDIR=pkg
+and
+.Ql DESTDIR=pkg robbie install
+both reach a recipe that reads
+.Ev $DESTDIR .
+A
+.Ar name
+is a letter or underscore followed by letters, digits and underscores.
+It cannot be one of the placeholders
+.Nm
+fills in itself:
+.Cm target ,
+.Cm input ,
+.Cm inputs ,
+.Cm newer
+or
+.Cm stem .
+Every other operand is a
+.Ar target
+to make, which some rule in the robfile must make: naming a file that
+is only ever an input, or no file at all, is an error.
+.Ss The listing
+With no
+.Ar target ,
+.Nm
+prints the path of the robfile, with the home directory written as
+.Ql ~ ,
+and then what it holds, in three parts:
+.Bl -tag -width variables
+.It tasks
+Each task, with its description and, after an arrow, its inputs as
+written.
+.It files
+Each file a rule makes, and each pattern, likewise.
+A
+.Ql \(bu
+marks a file that is out of date; on a terminal it is yellow.
+An input that is missing and that no rule makes is not an error here;
+it only makes what needs it out of date.
+.It variables
+Each variable with its final value, in as many columns as fit.
+.El
+.Pp
+The rules are in the order of the robfile, and their columns line up.
+Text too long for the line is cut, ending in an ellipsis: the inputs
+first, then the descriptions.
+The line is as wide as the terminal, or 80 characters when standard
+output is not a terminal.
+.Pp
+On a terminal the output is in colour: names are bold, tasks and files
+each have their own colour, and inputs are dim.
+There is no colour when standard output, or standard error for
+messages, is not a terminal, or when
+.Ev NO_COLOR
+is set, so a script sees plain text.
+.Ss Interactive mode
+With
+.Fl i ,
+.Nm
+shows the tasks and files of the listing, without the patterns and the
+variables, on the terminal's alternate screen, with a cursor on one of
+them.
+The list scrolls when it is longer than the screen, and is drawn again
+when the terminal changes size.
+The keys are:
+.Bl -tag -width "Up, Down"
+.It Up , Down
+Move the cursor; so do
+.Cm j
+and
+.Cm k .
+.It Enter
+Make the target under the cursor, as if it had been named on the
+command line, on the screen
+.Nm
+was started from.
+With
+.Fl n ,
+only show what would run.
+.It Cm n
+Show what making the target would run, without running it.
+.It Cm q
+Quit.
+.It Esc
+Clear the filter, or quit when there is none.
+.It Ctrl-C
+Quit at once.
+.El
+.Pp
+Any other letter, digit or sign is typed into a filter, and the list
+shows only the names that hold what was typed, ignoring case.
+While a filter is typed,
+.Cm j ,
+.Cm k ,
+.Cm n
+and
+.Cm q
+are typed into it like any other letter; Backspace takes one back.
+.Pp
+After a target is made,
+.Nm
+waits for a key and goes back to the list, where the marks of the files
+out of date are updated and the summary of the run is shown at the
+bottom.
+An input that is missing, and that no rule makes, is reported as with
+.Fl k ,
+and does not end the interactive mode.
+The terminal is put back as it was however
+.Nm
+ends; on
+.Dv SIGINT ,
+.Dv SIGTERM
+or
+.Dv SIGHUP
+it is put back first, and
+.Nm
+then dies of the signal.
+.Sh ENVIRONMENT
+Recipes run with the environment
+.Nm
+was given, and each
+.Ar name Ns = Ns Ar value
+operand added to it.
+.Bl -tag -width NO_COLOR
+.It Ev HOME
+The home directory, written as
+.Ql ~
+in the listing.
+.It Ev NO_COLOR
+When set, and not empty, there is no colour at all.
+It is read from the environment
+.Nm
+was started with, so a
+.Li NO_COLOR=1
+operand reaches only the recipes.
+.El
+.Sh FILES
+.Bl -tag -width Robfile
+.It Pa Robfile
+The robfile read when
+.Fl f
+is not given; its format is described in
+.Xr robfile 5 .
+.El
+.Sh EXIT STATUS
+.Nm
+exits 0 on success, 1 when a recipe failed, and 2 when the robfile has
+an error or
+.Nm
+is used wrongly.
+Stopped by a signal, it dies of that signal, which a shell reports as
+128 plus its number.
+An input that is missing, and that no rule makes, counts as an error
+in the robfile, even when
+.Fl k
+made everything else.
+.Sh EXAMPLES
+In robbie's own repository, whose robfile is the first example in
+.Xr robfile 5 ,
+.Nm
+with no target shows what can be done there; on a terminal 80
+characters wide, once robbie is built:
+.Bd -literal
+ robbie  ~/r/robbie/Robfile
+
+ tasks
+   test           Run the tests, then check the man pages.  \(<- build/robbie
+   install        Install into /usr/local.                  \(<- build/robbie
+   uninstall      Remove what install put there.
+   clean          Remove everything the build made.
+
+ files
+   build/robbie   The program itself.                       \(<- src/*.raz
+ \(bu robbie.tar.gz  A release tarball.                        \(<- build/robbie doc/\[u2026]
+
+ variables
+   raz = raz -Werror                     prefix = /usr/local
+   pages = doc/robbie.1 doc/robfile.5
+.Ed
+.Pp
+The tarball is out of date, since it has not been made yet.
+Make it, with up to four recipes at once:
+.Pp
+.Dl $ robbie -j4 robbie.tar.gz
+.Pp
+See what installing would run, without running it:
+.Pp
+.Dl $ robbie -n install
+.Pp
+Install into a staging directory, under
+.Pa /usr :
+.Pp
+.Dl $ robbie install prefix=/usr DESTDIR=pkg
+.Pp
+Pick a task from a list, and run it:
+.Pp
+.Dl $ robbie -i
+.Sh DIAGNOSTICS
+A mistake in the robfile is reported with the file and the line it
+starts on, as in
+.Pp
+.Dl robbie: Robfile:12: unknown placeholder {rza}; did you mean {raz}?
+.Pp
+and
+.Nm
+stops there.
+An unknown placeholder is reported with the closest name
+.Nm
+knows, when one is close enough to be a likely typo, and so is a
+.Ar target
+that no rule makes:
+.Pp
+.Dl robbie: no rule makes 'tset'; did you mean 'test'?
+.Pp
+A loop, where a target needs itself through other rules, is reported
+whole, a line to each link, with the place of the rule that makes it:
+.Bd -literal -offset indent
+robbie: Robfile:3: 'main.o' needs itself, through a loop:
+robbie: Robfile:3:   main.o needs gen.h
+robbie: Robfile:5:   gen.h needs gen.sh
+robbie: Robfile:6:   gen.sh needs main.o
+.Ed
+.Pp
+An input that does not exist, and that no rule makes, is reported at
+the rule that needs it, but only when a
+.Ar target
+asked for needs it:
+.Pp
+.Dl robbie: Robfile:5: 'b.o' needs 'b.c', which does not exist, and no rule makes it
+.Pp
+A glob that matches no file is reported wherever it is in the
+robfile:
+.Pp
+.Dl robbie: Robfile:3: 'prog' needs '*.cc', which matches no file
+.Pp
+A recipe that fails is reported at the first line of its rule, with
+its exit status or the signal that killed it:
+.Pp
+.Dl robbie: Robfile:2: 'prog' failed: exit status 1
+.Pp
+When that recipe, or one stopped by a signal, had begun to write its
+target, the half-made file is removed and reported:
+.Pp
+.Dl robbie: Robfile:2: removed half-made 'prog'
+.Pp
+With
+.Fl k ,
+a target that is not made because something it needs was not is
+reported too:
+.Pp
+.Dl robbie: Robfile:8: not making 'prog', since it needs 'b.o'
+.Sh SEE ALSO
+.Xr robfile 5 ,
+.Xr make 1 ,
+.Xr sh 1

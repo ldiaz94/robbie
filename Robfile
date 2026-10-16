@@ -1,0 +1,39 @@
+# Robfile for robbie: build it, test it, install it.
+
+raz    = raz -Werror
+prefix = /usr/local
+pages  = doc/robbie.1 doc/robfile.5
+
+# The program itself.
+build/robbie: src/*.raz
+    mkdir -p build
+    {raz} -o {target} src/Robbie.raz
+
+# A release tarball.
+robbie.tar.gz: build/robbie {pages} README.md
+    tar czf {target} {inputs}
+
+# Run the tests, then check the man pages.
+task test: build/robbie
+    for t in test/*.sh; do
+        sh "$t" | diff -u "${t%.sh}.out" - || exit 1
+    done
+    # groff exits 0 even when it warns, so any output is a failure
+    out=$(groff -mdoc -ww -z {pages} 2>&1)
+    test -z "$out" || { echo "$out"; exit 1; }
+
+# Install into {prefix}.
+task install: build/robbie
+    install -Dm755 build/robbie "$DESTDIR{prefix}/bin/robbie"
+    install -Dm644 doc/robbie.1 "$DESTDIR{prefix}/share/man/man1/robbie.1"
+    install -Dm644 doc/robfile.5 "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove what install put there.
+task uninstall:
+    rm -f "$DESTDIR{prefix}/bin/robbie" \
+          "$DESTDIR{prefix}/share/man/man1/robbie.1" \
+          "$DESTDIR{prefix}/share/man/man5/robfile.5"
+
+# Remove everything the build made.
+task clean:
+    rm -rf build robbie.tar.gz

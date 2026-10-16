@@ -1,0 +1,105 @@
+--- Robfile
+ 1| dir = sub
+ 2| cc = cc
+ 3| 
+ 4| prog: main.c
+ 5|     {cc} -o prog main.c
+ 6| include   {dir}/rules.rob
+ 7| # After the include.
+ 8| task test: prog
+ 9|     ./prog
+--- sub/rules.rob
+ 1| cc = {cc} -Wall
+ 2| # Made in sub.
+ 3| lib.a: lib.c
+ 4|     ar rc lib.a lib.o
+ 5| include common.rob
+--- common.rob
+ 1| common = yes
+$ robbie -p
+dir = sub
+cc = cc -Wall
+common = yes
+
+prog: main.c
+    {cc} -o prog main.c
+
+# Made in sub.
+lib.a: lib.c
+    ar rc lib.a lib.o
+
+# After the include.
+task test: prog
+    ./prog
+exit 0
+$ robbie -p cc=gcc
+cc = gcc
+dir = sub
+common = yes
+
+prog: main.c
+    {cc} -o prog main.c
+
+# Made in sub.
+lib.a: lib.c
+    ar rc lib.a lib.o
+
+# After the include.
+task test: prog
+    ./prog
+exit 0
+--- Robfile
+ 1| include = x
+ 2| include: a
+$ robbie -p
+include = x
+
+include: a
+exit 0
+--- Robfile
+ 1| include sub/bad.rob
+--- sub/bad.rob
+ 1| x = 1
+ 2|     echo stray
+$ robbie -p
+robbie: sub/bad.rob:2: indented line with no rule above it
+exit 2
+--- Robfile
+ 1| prog:
+ 2| include common.rob
+ 3|     echo stray
+$ robbie -p
+robbie: Robfile:3: indented line with no rule above it
+exit 2
+--- Robfile
+ 1| include nothere.rob
+$ robbie -p
+robbie: Robfile:1: cannot read nothere.rob: no such file or directory
+exit 2
+--- Robfile
+ 1| include a.rob
+--- a.rob
+ 1| include ./Robfile
+$ robbie -p
+robbie: a.rob:1: include loop: ./Robfile is already being read
+exit 2
+--- Robfile
+ 1| include ./Robfile
+$ robbie -p
+robbie: Robfile:1: include loop: ./Robfile is already being read
+exit 2
+--- Robfile
+ 1| none =
+ 2| include {none}
+$ robbie -p
+robbie: Robfile:2: include needs a file name
+exit 2
+--- Robfile
+ 1| include sub/dup.rob
+ 2| prog:
+--- sub/dup.rob
+ 1| 
+ 2| prog: main.c
+$ robbie -p
+robbie: Robfile:2: 'prog' already has a rule, at sub/dup.rob:2
+exit 2

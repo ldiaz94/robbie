@@ -1,0 +1,51 @@
+$ robbie 
+ robbie  ~/Robfile
+
+ tasks
+   test           Run the tests, then check the man pages.  ← build/robbie
+   install        Install into /usr/local.                  ← build/robbie
+   uninstall      Remove what install put there.
+   clean          Remove everything the build made.
+
+ files
+ ● build/robbie   The program itself.                       ← src/*.raz
+ ● robbie.tar.gz  A release tarball.                        ← build/robbie doc/…
+
+ variables
+   raz = raz -Werror                     prefix = /usr/local
+   pages = doc/robbie.1 doc/robfile.5
+exit 0
+$ robbie prefix=/opt
+ robbie  ~/Robfile
+
+ tasks
+   test           Run the tests, then check the man pages.  ← build/robbie
+   install        Install into /opt.                        ← build/robbie
+   uninstall      Remove what install put there.
+   clean          Remove everything the build made.
+
+ files
+   build/robbie   The program itself.                       ← src/*.raz
+ ● robbie.tar.gz  A release tarball.                        ← build/robbie doc/…
+
+ variables
+   prefix = /opt                         raz = raz -Werror
+   pages = doc/robbie.1 doc/robfile.5
+exit 0
+$ robbie -C sub -f rules
+ robbie  ~/sub/rules
+
+ tasks
+   docs                                         Build the documentation for eve…
+   crème                                        Crème brûlée, à la carte: façad…
+   bare
+
+ files
+ ● out/a-very-long-file-name-for-a-listing.txt  Made from a file that is not th…
+exit 0
+$ robbie -f empty
+ robbie  ~/empty
+
+ variables
+   x = 1
+exit 0

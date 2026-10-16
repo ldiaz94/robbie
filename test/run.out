@@ -1,0 +1,200 @@
+--- Robfile
+ 1| cc = cc
+ 2| prog: a.o b.o
+ 3|     cat {inputs} >{target}
+ 4|     echo "made {target} from {input} and the rest; newer: {newer}"
+ 5| a.o: a.c gen.h
+ 6|     cat {inputs} >{target}
+ 7| b.o: b.c gen.h
+ 8|     cat {inputs} >{target}
+ 9| gen.h:
+10|     n=3
+11|     echo "#define N ${n}" >{target}
+12| 
+13| # a multi-line script: the loop spans lines, and cd carries on
+14| task show: prog
+15|     for f in {inputs}; do
+16|         echo "$f: $(wc -c <$f)"
+17|     done
+18|     cd /
+19|     pwd
+20| task flags:
+21|     echo {cc}
+22| cc = {cc} -O2
+# a.c b.c at 2026-01-01 12:00
+$ robbie prog
+▸ gen.h
+n=3
+echo "#define N ${n}" >gen.h
+▸ a.o
+cat a.c gen.h >a.o
+▸ b.o
+cat b.c gen.h >b.o
+▸ prog
+cat a.o b.o >prog
+echo "made prog from a.o and the rest; newer: a.o b.o"
+made prog from a.o and the rest; newer: a.o b.o
+done: 4 made, in (time)
+exit 0
+#define N 3
+#define N 3
+$ robbie prog
+done: 4 up to date, in (time)
+exit 0
+# gen.h a.o b.o prog at 2026-01-01 12:05
+# b.c at 2026-01-01 12:10
+$ robbie prog
+▸ b.o
+cat b.c gen.h >b.o
+▸ prog
+cat a.o b.o >prog
+echo "made prog from a.o and the rest; newer: b.o"
+made prog from a.o and the rest; newer: b.o
+done: 2 made, 2 up to date, in (time)
+exit 0
+$ robbie show
+▸ show
+for f in prog; do
+    echo "$f: $(wc -c <$f)"
+done
+cd /
+pwd
+prog: 24
+/
+done: 1 made, 4 up to date, in (time)
+exit 0
+$ robbie flags
+▸ flags
+echo cc -O2
+cc -O2
+done: 1 made, in (time)
+exit 0
+$ robbie -q gen.h show
+▸ show
+prog: 24
+/
+done: 1 made, 4 up to date, in (time)
+exit 0
+$ robbie -n prog
+▸ gen.h
+n=3
+echo "#define N ${n}" >gen.h
+▸ a.o
+cat a.c gen.h >a.o
+▸ b.o
+cat b.c gen.h >b.o
+▸ prog
+cat a.o b.o >prog
+echo "made prog from a.o and the rest; newer: a.o b.o"
+exit 0
+gen.h still missing
+$ robbie -nq prog
+▸ gen.h
+n=3
+echo "#define N ${n}" >gen.h
+▸ a.o
+cat a.c gen.h >a.o
+▸ b.o
+cat b.c gen.h >b.o
+▸ prog
+cat a.o b.o >prog
+echo "made prog from a.o and the rest; newer: a.o b.o"
+exit 0
+$ robbie -q prog
+▸ gen.h
+▸ a.o
+▸ b.o
+▸ prog
+made prog from a.o and the rest; newer: a.o b.o
+done: 4 made, in (time)
+exit 0
+--- Robfile
+ 1| task all: bad good after
+ 2| bad:
+ 3|     echo first
+ 4|     false
+ 5|     echo never
+ 6| good:
+ 7|     touch {target}
+ 8| after: bad
+ 9|     touch {target}
+10| task killed:
+11|     kill -9 $$
+$ robbie all
+▸ bad
+echo first
+false
+echo never
+first
+robbie: Robfile:2: 'bad' failed: exit status 1
+failed: 1 failed, in (time)
+exit 1
+good not made
+$ robbie -k all
+▸ bad
+echo first
+false
+echo never
+first
+robbie: Robfile:2: 'bad' failed: exit status 1
+▸ good
+touch good
+robbie: Robfile:8: not making 'after', since it needs 'bad'
+robbie: Robfile:1: not making 'all', since it needs 'bad'
+failed: 1 made, 1 failed, 2 not made, in (time)
+exit 1
+ls: cannot access 'after': No such file or directory
+good
+$ robbie killed
+▸ killed
+kill -9 $$
+robbie: Robfile:10: 'killed' failed: killed by signal 9
+failed: 1 failed, in (time)
+exit 1
+--- Robfile
+ 1| task all: one two
+ 2| one: nowhere.c
+ 3|     touch {target}
+ 4| two:
+ 5|     touch {target}
+$ robbie all
+robbie: Robfile:2: 'one' needs 'nowhere.c', which does not exist, and no rule makes it
+exit 2
+$ robbie -k all
+robbie: Robfile:2: 'one' needs 'nowhere.c', which does not exist, and no rule makes it
+robbie: Robfile:2: not making 'one', since it needs 'nowhere.c'
+▸ two
+touch two
+robbie: Robfile:1: not making 'all', since it needs 'one'
+failed: 1 made, 2 not made, in (time)
+exit 2
+--- Robfile
+ 1| task all:
+ 2|     touch ran
+ 3| task other:
+ 4|     echo {tagret}
+$ robbie all
+robbie: Robfile:4: unknown placeholder {tagret}; did you mean {target}?
+exit 2
+nothing ran
+--- Robfile
+ 1| task all:
+ 2|     echo {input}
+ 3| x = {target}
+$ robbie all
+robbie: Robfile:3: {target} can only be used in a recipe
+exit 2
+--- Robfile
+ 1| DESTDIR =
+ 2| task install:
+ 3|     echo "[{DESTDIR}] [$DESTDIR]"
+$ robbie -q install DESTDIR=pkg
+▸ install
+[pkg] [pkg]
+done: 1 made, in (time)
+exit 0
+$ robbie -q install
+▸ install
+[] [env]
+done: 1 made, in (time)
+exit 0

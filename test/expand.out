@@ -1,0 +1,69 @@
+--- Robfile
+ 1| cc = cc
+ 2| flags = -O2
+ 3| flags = {flags} -g
+ 4| cmd = {cc} {flags}{flags}
+ 5| cc = tcc
+ 6| late = {cc}
+$ robbie -p
+cc = tcc
+flags = -O2 -g
+cmd = cc -O2 -g-O2 -g
+late = tcc
+exit 0
+$ robbie -p cc=clang flags={cc}
+cc = clang
+flags = {cc}
+cmd = clang {cc}{cc}
+late = clang
+exit 0
+--- Robfile
+ 1| x = 1
+ 2| print = awk '{{print}' {{x} {{{x}
+ 3| shell = ${HOME} ${x} a{x}b
+ 4| braces = { print $1 } {a,b} {} {1x} {x-y} { x} {x {x
+$ robbie -p
+x = 1
+print = awk '{print}' {x} {1
+shell = ${HOME} ${x} a1b
+braces = { print $1 } {a,b} {} {1x} {x-y} { x} {x {x
+exit 0
+--- Robfile
+ 1| fpc = fpc -O2
+ 2| build = {fcp} robbie.pas
+$ robbie -p
+robbie: Robfile:2: unknown placeholder {fcp}; did you mean {fpc}?
+exit 2
+--- Robfile
+ 1| y = 1
+ 2| z = {x}
+$ robbie -p
+robbie: Robfile:2: unknown placeholder {x}; write {{ for a literal {
+exit 2
+--- Robfile
+ 1| a = {a} more
+$ robbie -p
+robbie: Robfile:1: unknown placeholder {a}; write {{ for a literal {
+exit 2
+--- Robfile
+ 1| out = {tagret}
+$ robbie -p
+robbie: Robfile:1: unknown placeholder {tagret}; did you mean {target}?
+exit 2
+--- Robfile
+ 1| out = {target}
+$ robbie -p
+robbie: Robfile:1: {target} can only be used in a recipe
+exit 2
+--- Robfile
+ 1| inputs = a b
+$ robbie -p
+robbie: Robfile:1: 'inputs' is robbie's own placeholder, not a variable name
+exit 2
+$ robbie -p stem=x
+robbie: 'stem' is robbie's own placeholder, not a variable name
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+--- a Robfile doubling a twelve times
+$ robbie -p | awk ...
+4 16384

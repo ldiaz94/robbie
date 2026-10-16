@@ -1,0 +1,78 @@
+$ robbie -p -C dwm
+cc = cc -Os
+
+# The window manager.
+dwm: drw.o dwm.o util.o
+    {cc} -o {target} {inputs} -lX11 -lXft
+
+# Each object from its C file.
+*.o: *.c config.h
+    {cc} -c {input} -o {target}
+exit 0
+$ robbie -n -C dwm dwm
+▸ drw.o
+cc -Os -c drw.c -o drw.o
+▸ dwm.o
+cc -Os -c dwm.c -o dwm.o
+▸ util.o
+cc -Os -c util.c -o util.o
+▸ dwm
+cc -Os -o dwm drw.o dwm.o util.o -lX11 -lXft
+exit 0
+--- Robfile
+ 1| sources = main.c util.c README notes.c.txt
+ 2| objects = {build/*.o for *.c in sources}
+ 3| task show: {*.h for src/*.c}
+ 4|     echo {objects}
+ 5|     echo {*.d for *.h in inputs} and {target}
+ 6|     echo {{*.x for *.y} ${HOME+set} { echo shell; }
+ 7|     echo {*.o for *.c in sources}
+ 8| *.h:
+ 9|     true
+$ robbie -p
+sources = main.c util.c README notes.c.txt
+objects = build/main.o build/util.o
+
+task show: a.h b.h
+    echo {objects}
+    echo {*.d for *.h in inputs} and {target}
+    echo {{*.x for *.y} ${HOME+set} { echo shell; }
+    echo {*.o for *.c in sources}
+
+*.h:
+    true
+exit 0
+$ robbie -n show
+▸ a.h
+true
+▸ b.h
+true
+▸ show
+echo build/main.o build/util.o
+echo a.d b.d and show
+echo {*.x for *.y} ${HOME+set} { echo shell; }
+echo main.o util.o
+exit 0
+--- Robfile
+ 1| task show:
+ 2|     echo {x for y} { *.o for *.c} {*.o fore *.c} {*.o for *.c on x}
+$ robbie -n show
+▸ show
+echo {x for y} { *.o for *.c} {*.o fore *.c} {*.o for *.c on x}
+exit 0
+--- Robfile
+ 1| objects = {*.o for *.cc}
+$ robbie -p
+robbie: Robfile:1: '*.cc' matches no file
+exit 2
+--- Robfile
+ 1| sources = a.c
+ 2| objects = {*.o for *.c in sorces}
+$ robbie -p
+robbie: Robfile:2: unknown placeholder {sorces}; did you mean {sources}?
+exit 2
+--- Robfile
+ 1| objects = {*.o for *.*}
+$ robbie -p
+robbie: Robfile:1: a pattern has one '*', not '*.*'
+exit 2

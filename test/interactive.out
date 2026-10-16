@@ -1,0 +1,10 @@
+$ robbie -i hello
+robbie: -i takes no target; pick one from the list
+usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -i
+robbie: -i needs a terminal
+exit 2
+$ robbie -i x=1
+robbie: -i needs a terminal
+exit 2

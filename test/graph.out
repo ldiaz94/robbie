@@ -1,0 +1,82 @@
+--- Robfile
+ 1| prog: a.o b.o
+ 2| a.o: a.c common.h
+ 3| b.o: b.c common.h
+ 4| common.h: common.in
+ 5| task test: prog
+$ robbie 
+ robbie  ~/Robfile
+
+ tasks
+   test      ← prog
+
+ files
+ ● prog      ← a.o b.o
+ ● a.o       ← a.c common.h
+ ● b.o       ← b.c common.h
+ ● common.h  ← common.in
+exit 0
+$ robbie prog test prog
+done: nothing to do, in (time)
+exit 0
+$ robbie cc=gcc test
+done: nothing to do, in (time)
+exit 0
+$ robbie tset
+robbie: no rule makes 'tset'; did you mean 'test'?
+exit 2
+$ robbie nothing
+robbie: no rule makes 'nothing'
+exit 2
+$ robbie a.c
+robbie: no rule makes 'a.c'; did you mean 'a.o'?
+exit 2
+--- Robfile
+ 1| prog: main.c prog
+$ robbie 
+robbie: Robfile:1: 'prog' needs itself, through a loop:
+robbie: Robfile:1:   prog needs prog
+exit 2
+--- Robfile
+ 1| task all: prog
+ 2| prog: main.o
+ 3| main.o: main.c gen.h
+ 4| 
+ 5| gen.h: gen.sh
+ 6| gen.sh: main.o
+ 7| task other:
+$ robbie 
+robbie: Robfile:3: 'main.o' needs itself, through a loop:
+robbie: Robfile:3:   main.o needs gen.h
+robbie: Robfile:5:   gen.h needs gen.sh
+robbie: Robfile:6:   gen.sh needs main.o
+exit 2
+$ robbie other
+robbie: Robfile:3: 'main.o' needs itself, through a loop:
+robbie: Robfile:3:   main.o needs gen.h
+robbie: Robfile:5:   gen.h needs gen.sh
+robbie: Robfile:6:   gen.sh needs main.o
+exit 2
+$ robbie -p
+task all: prog
+
+prog: main.o
+
+main.o: main.c gen.h
+
+gen.h: gen.sh
+
+gen.sh: main.o
+
+task other:
+exit 0
+--- Robfile
+ 1| x: y
+ 2| include more.rob
+--- more.rob
+ 1| y: x
+$ robbie 
+robbie: Robfile:1: 'x' needs itself, through a loop:
+robbie: Robfile:1:   x needs y
+robbie: more.rob:1:   y needs x
+exit 2
