@@ -1,3 +1,7 @@
+<p align="center">
+<img src="doc/robbie.jpg" alt="Robbie, a Polish lowland sheepdog, in a workshop of tools and terminals" width="720">
+</p>
+
 <h1 align="center">robbie</h1>
 
 <p align="center"><em>make's one great idea, written in words.</em></p>
@@ -171,3 +175,7 @@ same.
 
 From the Polish *robić*, "to do, to make": you tell robbie what to make,
 and it makes it.
+
+The mascot, also Robbie, is a Polish lowland sheepdog (*polski owczarek
+nizinny*): a herder by trade, which suits a program that rounds up what is
+out of date.
