@@ -6,7 +6,7 @@
 .Nd make what is out of date, and show what can be done
 .Sh SYNOPSIS
 .Nm
-.Op Fl iknpq
+.Op Fl iknpqw
 .Op Fl C Ar dir
 .Op Fl f Ar file
 .Op Fl j Ar n
@@ -138,6 +138,34 @@ The headers and the summary are printed all the same.
 With
 .Fl n
 they are printed all the same.
+.It Fl w
+Watch: make the targets, then make them again whenever a file they
+need changes, until a signal stops
+.Nm .
+The files watched are every file the targets reach that no rule makes,
+globbed or brought in by a pattern alike, and the robfile with every
+file it includes.
+Each round reads the robfile afresh, so an edited rule, or a new file a
+glob now matches, is picked up.
+A failed recipe, or a robfile that no longer reads, is reported, and
+the watch waits for the next change.
+A task watches the files it names after its colon, as in
+.Ql task test: src/*.raz ;
+when the targets need no file, only the robfile is watched, and
+.Nm
+says so.
+The files are looked at every 300 milliseconds, and a round starts once
+a change has settled.
+On a terminal the screen is cleared before each round.
+At least one
+.Ar target
+must be named, and
+.Fl w
+cannot go with
+.Fl i ,
+.Fl n
+or
+.Fl p .
 .El
 .Pp
 Flags can be bundled, as in
@@ -355,6 +383,10 @@ Install into a staging directory, under
 Pick a task from a list, and run it:
 .Pp
 .Dl $ robbie -i
+.Pp
+Run the tests again whenever a source file changes, until Ctrl-C:
+.Pp
+.Dl $ robbie -w test
 .Sh DIAGNOSTICS
 A mistake in the robfile is reported with the file and the line it
 starts on, as in

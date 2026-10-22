@@ -43,8 +43,8 @@ exception, not a new one. The C library is used for `glob(3)` alone.
 ## Code style
 
 - Modules keep the Pascal units' jobs, each named with an R: `Rbase`,
-  `Rsig`, `Rexpand`, `Rread`, `Rgraph`, `Rterm`, `Rjob`, `Rshow`, and
-  `Robbie`, the main module. `PLAN.md` says what each does.
+  `Rsig`, `Rexpand`, `Rread`, `Rgraph`, `Rterm`, `Rjob`, `Rshow`,
+  `Rwatch`, and `Robbie`, the main module. `PLAN.md` says what each does.
 - Comment heavily; this codebase is meant to be read top to bottom:
   - every module opens with a block comment: what it does, why it is
     shaped that way, what it depends on and how it fits with the others;

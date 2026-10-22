@@ -7,8 +7,8 @@
    are, from the bottom up: Rbase for text and messages, Rsig to tell an
    ignored signal, Rexpand for the variables and placeholders, Rread for
    the robfile, Rgraph for what is out of date, Rterm for the terminal,
-   Rjob for running recipes, and Rshow for the listing and the
-   interactive mode.
+   Rjob for running recipes, Rshow for the listing and the interactive
+   mode, and Rwatch for -w.
 
    It reads the command line and the robfile, and with -p prints what
    it read; otherwise it builds the graph, which checks it for loops,
@@ -29,11 +29,11 @@
    the same rules, but words its help and its mistakes its own way;
    robbie keeps its own, which its manual and its tests show. *)
 module Robbie;
-import Sys, Rt, Out, Str, Files, Rbase, Rexpand, Rread, Rgraph, Rterm, Rjob, Rshow;
+import Sys, Rt, Out, Str, Files, Rbase, Rexpand, Rread, Rgraph, Rterm, Rjob, Rshow, Rwatch;
 
 const
     (* the one-line summary printed after every usage error *)
-    UsageLine = "usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]";
+    UsageLine = "usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]";
     (* the most recipes -j lets run at once: far more than any machine
        needs; the message of jobCount spells it out, so change both
        together *)
@@ -45,6 +45,7 @@ var
     dryRun: BOOL;       (* -n: print the recipes instead of running them *)
     printOnly: BOOL;    (* -p: print the rules and variables as they were read *)
     quiet: BOOL;        (* -q: don't echo recipe lines *)
+    watch: BOOL;        (* -w: make the targets again whenever a file they need changes *)
     dir: []U8;          (* -C: the directory to change to first; "" to stay put *)
     robfile: []U8;      (* -f: the robfile to read, relative to dir *)
     jobs: INT;          (* -j: how many recipes may run at once *)
@@ -136,6 +137,7 @@ begin
             | 'n': dryRun := true;
             | 'p': printOnly := true;
             | 'q': quiet := true;
+            | 'w': watch := true;
             | 'h': showUsage;
             | 'C': dir := flagValue(arg, k, i, c);
             | 'f': robfile := flagValue(arg, k, i, c);
@@ -204,21 +206,14 @@ begin
     return n;
 end;
 
-proc main*: INT;
-var status, e: INT;
+(* Reads the robfile and does what the command line asks: prints what
+   was read, shows the listing or the interactive mode, or makes the
+   targets. Returns the exit status. With -w this is one round, run
+   afresh by Rwatch at each change, and it tells Rwatch what to watch
+   once the targets are known. *)
+proc run: INT;
+var status: INT;
 begin
-    Rterm.setup;
-    readFlags;
-    (* before the robfile, so the operands' values are fixed when it
-       tries to set the same names *)
-    readOverrides;
-    if interactive and (targetCount() > 0) then
-        usage(["-i takes no target; pick one from the list"]);
-    end;
-    if LEN(dir) > 0 then
-        e := Sys.setWorkDir(dir);
-        if e # 0 then Rbase.fatal(Rbase.Nowhere, ["cannot change to ", dir, ": ", Rbase.reason(e)]); end;
-    end;
     Rread.readRobfile(robfile);
     if printOnly then
         Rread.printRead;
@@ -240,6 +235,7 @@ begin
         Rshow.showListing(robfile);
         return 0;
     end;
+    if watch then Rwatch.sendWatched; end;
     Rgraph.judge(keepGoing);
     status := Rjob.makePlan(dryRun, quiet, keepGoing, jobs);
     (* a missing input is the robfile's mistake, and outranks a failure *)
@@ -247,4 +243,26 @@ begin
     return status;
 end;
 
+proc main*: INT;
+var e: INT;
+begin
+    Rterm.setup;
+    readFlags;
+    (* before the robfile, so the operands' values are fixed when it
+       tries to set the same names *)
+    readOverrides;
+    if interactive and (targetCount() > 0) then
+        usage(["-i takes no target; pick one from the list"]);
+    end;
+    if watch and (interactive or dryRun or printOnly) then usage(["-w can't go with -i, -n or -p"]); end;
+    if watch and (targetCount() = 0) then usage(["-w needs a target to make"]); end;
+    if LEN(dir) > 0 then
+        e := Sys.setWorkDir(dir);
+        if e # 0 then Rbase.fatal(Rbase.Nowhere, ["cannot change to ", dir, ": ", Rbase.reason(e)]); end;
+    end;
+    if watch then Rwatch.watch(robfile, run); end;
+    return run();
+end;
+
 end Robbie.
+

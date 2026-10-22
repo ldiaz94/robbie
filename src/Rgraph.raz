@@ -145,31 +145,31 @@ var
 (* The nodes; good until the next is added. *)
 proc allNodes*: []Node;
 begin
-    return Nodes.all(ADR(nodes));
+    return Nodes.all(nodes);
 end;
 
 (* Node n; good until the next is added. *)
 proc node*(n: INT): ^Node;
 begin
-    return ADR(Nodes.all(ADR(nodes))[n]);
+    return ADR(Nodes.all(nodes)[n]);
 end;
 
 (* Every node's inputs, as node numbers. *)
 proc allEdges*: []INT;
 begin
-    return Ints.all(ADR(edges));
+    return Ints.all(edges);
 end;
 
 (* The goals, as node numbers, in the order named. *)
 proc allGoals*: []INT;
 begin
-    return Ints.all(ADR(goals));
+    return Ints.all(goals);
 end;
 
 (* What is to be made, as node numbers, each after what it needs. *)
 proc allPlan*: []INT;
 begin
-    return Ints.all(ADR(plan));
+    return Ints.all(plan);
 end;
 
 (* The place of the rule that makes node n, for messages; n must have
@@ -185,7 +185,7 @@ end;
 proc findNode*(name: []U8): INT;
 var n: INT; ok: BOOL;
 begin
-    n, ok := Names.get(ADR(names), name);
+    n, ok := Names.get(names, name);
     if not ok then return -1; end;
     return n;
 end;
@@ -198,8 +198,8 @@ begin
     n := findNode(name);
     if n >= 0 then return n; end;
     n := nodes.len;
-    Nodes.push(ADR(nodes), {name: name, rule: -1});
-    if not Names.put(ADR(names), name, n) then Rbase.fatal(Rbase.Nowhere, ["out of memory"]); end;
+    Nodes.push(nodes, {name: name, rule: -1});
+    if not Names.put(names, name, n) then Rbase.fatal(Rbase.Nowhere, ["out of memory"]); end;
     return n;
 end;
 
@@ -214,14 +214,14 @@ proc viable(r: INT; stem: []U8): BOOL;
 var inputs, word: []U8; i: INT; ok: BOOL;
 begin
     ok := true;
-    Flags.all(ADR(trying))[r] := true;
+    Flags.all(trying)[r] := true;
     inputs := Rread.allRules()[r].inputs;
     word := Rexpand.nextWord(inputs, i);
     while ok and (LEN(word) > 0) do
         ok := canHave(Rexpand.stemmed(word, stem));
         word := Rexpand.nextWord(inputs, i);
     end;
-    Flags.all(ADR(trying))[r] := false;
+    Flags.all(trying)[r] := false;
     return ok;
 end;
 
@@ -234,7 +234,7 @@ var rs: []Rread.Rule; stem: []U8; r: INT; ok: BOOL;
 begin
     rs := Rread.allRules();
     for r := 0 to LEN(rs) - 1 do
-        if rs[r].pattern and not Flags.all(ADR(trying))[r] then
+        if rs[r].pattern and not Flags.all(trying)[r] then
             stem, ok := Rexpand.matches(rs[r].target, name);
             if ok and viable(r, stem) then return r, stem; end;
         end;
@@ -267,7 +267,7 @@ begin
     for i := node(n)^.first to LEN(es) - 1 do
         if es[i] = m then return; end;
     end;
-    Ints.push(ADR(edges), m);
+    Ints.push(edges, m);
 end;
 
 (* Gives node n an edge to each file the glob word matches, in the
@@ -319,7 +319,7 @@ end;
 proc reportLoop(last, back: INT);
 var p: []INT; k: INT;
 begin
-    p := Ints.all(ADR(path));
+    p := Ints.all(path);
     k := LEN(p) - 1;
     while p[k] # back do DEC(k); end;
     Rbase.report(whereOf(back), ["'", node(back)^.name, "' needs itself, through a loop:"]);
@@ -339,7 +339,7 @@ proc follow(n: INT);
 var i, m: INT;
 begin
     node(n)^.search := onPath;
-    Ints.push(ADR(path), n);
+    Ints.push(path, n);
     for i := node(n)^.first to node(n)^.first + node(n)^.count - 1 do
         m := allEdges()[i];
         match node(m)^.search of
@@ -348,7 +348,7 @@ begin
         | clear:
         end;
     end;
-    _, _ := Ints.pop(ADR(path));
+    _, _ := Ints.pop(path);
     node(n)^.search := clear;
 end;
 
@@ -386,7 +386,7 @@ var rs: []Rread.Rule; i, n: INT;
 begin
     rs := Rread.allRules();
     (* one flag per rule, all false; kept for want, which matches again *)
-    Flags.resize(ADR(trying), LEN(rs));
+    Flags.resize(trying, LEN(rs));
     (* every plain target first, so they come first among the nodes *)
     for i := 0 to LEN(rs) - 1 do
         if not rs[i].pattern then
@@ -428,7 +428,7 @@ begin
     for i := 0 to LEN(gs) - 1 do
         if gs[i] = n then return; end;
     end;
-    Ints.push(ADR(goals), n);
+    Ints.push(goals, n);
 end;
 
 (* ------------------------------------------------------- out of date *)
@@ -507,7 +507,7 @@ begin
         me^.stale := it^.stale or it^.broken or (it^.stamp > me^.stamp);
         INC(i);
     end;
-    if me^.stale then Ints.push(ADR(plan), n); end;
+    if me^.stale then Ints.push(plan, n); end;
 end;
 
 (* Decides what the goals need made, filling the plan: every goal and
@@ -552,17 +552,17 @@ begin
         ns[i].stale := false;
         ns[i].broken := false;
     end;
-    Ints.reset(ADR(goals));
-    Ints.reset(ADR(plan));
+    Ints.reset(goals);
+    Ints.reset(plan);
     missingInput := false;
 end;
 
 begin
-    Nodes.init(ADR(nodes), Heap.heap);
-    Names.init(ADR(names), Heap.heap);
-    Ints.init(ADR(edges), Heap.heap);
-    Ints.init(ADR(goals), Heap.heap);
-    Ints.init(ADR(plan), Heap.heap);
-    Ints.init(ADR(path), Heap.heap);
-    Flags.init(ADR(trying), Heap.heap);
+    Nodes.init(nodes, Heap.heap);
+    Names.init(names, Heap.heap);
+    Ints.init(edges, Heap.heap);
+    Ints.init(goals, Heap.heap);
+    Ints.init(plan, Heap.heap);
+    Ints.init(path, Heap.heap);
+    Flags.init(trying, Heap.heap);
 end Rgraph.

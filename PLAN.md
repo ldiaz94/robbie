@@ -150,7 +150,7 @@ format, it updates the examples and every copy of them in the same commit.
 
 ## Command line
 
-    robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+    robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 
     (no target)  show the listing: tasks, files, variables
     -i           interactive: pick a task from the listing and run it
@@ -161,6 +161,7 @@ format, it updates the examples and every copy of them in the same commit.
     -n           print the recipes without running them
     -p           print the rules and variables as robbie read them (for tests)
     -q           quiet: don't echo recipe lines
+    -w           watch: make the targets again whenever a file they need changes
 
 It exits 0 on success, 1 when a recipe failed, and 2 when the robfile has
 an error or robbie is used wrongly. Messages include the file and line:
@@ -222,6 +223,7 @@ are one space with its library's. From the bottom up:
 | `Rterm.raz`     | The terminal: is it one, its size, colour escapes, raw mode, reading keys, and the signals robbie takes. Nothing else touches escape codes. |
 | `Rjob.raz`      | Runs recipes. Each recipe goes to `/bin/sh -e -c` as one script, through `Sys.spawn` and `Sys.wait`, with up to `-j` running at once. Handles SIGINT and SIGTERM, removes half-made files, and prints the run's headers and summary. |
 | `Rshow.raz`     | What the user sees of a robfile: the listing, and the interactive loop. |
+| `Rwatch.raz`    | `-w`: runs each round in a copy of robbie made by `Sys.fork`, which sends back on a pipe the files to watch, then looks at their times and sizes every 300 ms until one changes. |
 | `Robbie.raz`    | The main module: flags, finding the robfile, exit status. |
 
 A module can't import one that imports it, so where two Pascal units used

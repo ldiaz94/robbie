@@ -1,0 +1,323 @@
+(* Rwatch: robbie -w, which makes the targets again whenever a file
+   they need changes, until a signal stops it.
+
+   Each round is a whole run of robbie, made in a copy of it, started
+   with Sys.fork just before the robfile would be read. So every round
+   reads the robfile afresh, an edited rule or a new file a glob now
+   matches included, with nothing left over from the round before; and
+   a mistake in the robfile, which stops robbie through Rbase.fatal,
+   ends only the copy, which has reported it, while the watch goes on.
+
+   The copy knows what to watch, once it has the graph, and the watch
+   does not, so the copy sends it back on a pipe, before it makes
+   anything: every robfile it read, the first and each it includes,
+   and every file the goals reach that no rule makes, an input written
+   out, globbed or brought in by a pattern. A target is left out, since
+   making it changes it, which would start the next round at once. A
+   copy that stops before it sends anything leaves the files of the
+   round before watched, so mending the robfile starts the next.
+
+   Sys can't ask the kernel to say when a file changes (inotify), so
+   the files are looked at every WatchMs: the time and size of each,
+   kept in a list. A look that differs from the last is a change; then
+   the watch waits until one look more sees nothing new, since an
+   editor writes a file in steps. The look before the round's own is
+   taken as soon as the list comes, so a file saved while the targets
+   are being made starts another round.
+
+   SIGINT, SIGTERM and SIGHUP are noted, as Rterm.stopper takes them,
+   and break into the wait between looks at once. One that comes while
+   a round is running is passed on to it; robbie waits for the copy to
+   end, as it waits for its recipes, and then dies of the signal, so
+   the status is 128 plus the signal. The copy gives the signals back
+   what they do at first, so that it runs just as robbie without -w.
+
+   It uses Sys for the copy, the pipe, the files and the signals,
+   Rread and Rgraph for what the copy watches, Rterm for the screen and
+   the signals, Rjob to die of a signal, Rbase for the messages and
+   Out for what it prints. Robbie hands it the round to run. *)
+module Rwatch;
+import Sys, Rt, Out, Buf, Heap, Str, Rbase, Rread, Rgraph, Rterm, Rjob;
+import Names := Vec([]U8), Stamps := Vec(I64), Flags := Vec(BOOL);
+
+const
+    (* how long to wait between looks at the watched files, in ms *)
+    WatchMs = 300;
+    (* ends each name the copy sends; no file name holds it *)
+    Sep = "\x00";
+    (* the signals that stop the watch *)
+    Stops: [3]INT = [Sys.sigInt, Sys.sigTerm, Sys.sigHup];
+
+type
+    (* A run of robbie: reads the robfile and makes the targets, and
+       returns the exit status. *)
+    Round* = proc: INT;
+
+var
+    (* in the copy making a round, the end of the pipe the names to
+       watch go to; -1 in the watch itself *)
+    toWatch: INT;
+    (* the files watched: the robfiles first, then the files the
+       targets need *)
+    watched: Names.Vec;
+    (* how many of watched are robfiles *)
+    robfiles: INT;
+    (* the targets of the last round that said what to watch need no
+       file, so only robfiles are watched *)
+    bare: BOOL;
+    (* the note that only the robfile is watched has been given *)
+    noted: BOOL;
+
+(* ------------------------------------------------- the copy's side *)
+
+(* Writes all of s to fd, through short and interrupted writes. Stops
+   robbie when the pipe fails, as the watch has then gone. *)
+proc send(fd: INT; s: []U8);
+var n: INT;
+begin
+    while LEN(s) > 0 do
+        n := Sys.write(fd, s);
+        if n = Sys.errIntr then continue; end;
+        if n < 0 then Rbase.fatal(Rbase.Nowhere, ["cannot tell the watch: ", Rbase.reason(n)]); end;
+        s := s[n..LEN(s)];
+    end;
+end;
+
+(* Adds to b, each ended by Sep, the name of every node that node n
+   reaches, n among them, that no rule makes and that is a file on
+   disk. seen marks the nodes already walked, so each is added once. *)
+proc addSources(var b: Buf.Buf; var seen: Flags.Vec; n: INT);
+var me: Rgraph.Node; info: Sys.Info; e, i: INT;
+begin
+    if Flags.all(seen)[n] then return; end;
+    Flags.all(seen)[n] := true;
+    me := Rgraph.node(n)^;
+    if me.rule < 0 then
+        info, e := Sys.info(me.name);
+        if (e = 0) and not info.dir then
+            Buf.str(b, me.name);
+            Buf.str(b, Sep);
+        end;
+    end;
+    for i := me.first to me.first + me.count - 1 do addSources(b, seen, Rgraph.allEdges()[i]); end;
+end;
+
+(* In the copy making a round, sends the watch what to watch: the
+   robfiles read, an empty name, then the files the goals need that no
+   rule makes. Needs the goals named. Does nothing outside a round. *)
+proc sendWatched*;
+var b: Buf.Buf; seen: Flags.Vec; paths: [][]U8; goals: []INT; i: INT;
+begin
+    if toWatch < 0 then return; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Flags.init(seen, Heap.heap);
+    defer Flags.done(seen);
+    paths := Rread.allPaths();
+    for i := 0 to LEN(paths) - 1 do
+        Buf.str(b, paths[i]);
+        Buf.str(b, Sep);
+    end;
+    Buf.str(b, Sep);
+    Flags.resize(seen, LEN(Rgraph.allNodes()));
+    goals := Rgraph.allGoals();
+    for i := 0 to LEN(goals) - 1 do addSources(b, seen, goals[i]); end;
+    send(toWatch, Buf.bytes(b));
+    Sys.close(toWatch);
+    toWatch := -1;
+end;
+
+(* ------------------------------------------------ the watch's side *)
+
+(* If a stop signal came, passes it on to the round running, the
+   process pid, unless pid is 0, waits for that to end, and dies of the
+   signal. Returns when none came. *)
+proc checkStop(pid: INT);
+var sig, i, r: INT;
+begin
+    for i := 0 to LEN(Stops) - 1 do
+        if Sys.came(Stops[i]) then sig := Stops[i]; end;
+    end;
+    if sig = 0 then return; end;
+    if pid > 0 then
+        _ := Sys.kill(pid, sig);
+        repeat r, _, _ := Sys.wait(pid, true); until r # Sys.errIntr;
+    end;
+    Rjob.die(sig);
+end;
+
+(* Takes the names the round pid sends on fd, up to the end of the
+   pipe, into watched, with robfiles set. When it sends none, having
+   stopped first, watched is left as it was. *)
+proc readWatched(fd, pid: INT);
+var b: Buf.Buf; chunk: [4096]U8; rest, name: []U8; n: INT; inRobfiles: BOOL;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    while true do
+        n := Sys.read(fd, chunk);
+        if n = 0 then break; end;
+        if n = Sys.errIntr then checkStop(pid); continue; end;
+        if n < 0 then Rbase.fatal(Rbase.Nowhere, ["cannot hear the round: ", Rbase.reason(n)]); end;
+        Buf.str(b, chunk[0..n]);
+    end;
+    if b.len = 0 then return; end;
+    Names.reset(watched);
+    robfiles := 0;
+    inRobfiles := true;
+    rest := Rbase.keep(Buf.bytes(b));
+    while LEN(rest) > 0 do
+        name, rest, _ := Str.cut(rest, Sep);
+        (* the empty name between the robfiles and the rest *)
+        if LEN(name) = 0 then
+            inRobfiles := false;
+        else
+            Names.push(watched, name);
+            if inRobfiles then INC(robfiles); end;
+        end;
+    end;
+    bare := LEN(Names.all(watched)) = robfiles;
+end;
+
+(* Waits for the round pid to end; a stop signal that comes meanwhile
+   is passed on to it. *)
+proc waitRound(pid: INT);
+var r: INT; how: Sys.Status;
+begin
+    repeat
+        r, how, _ := Sys.wait(pid, true);
+        if r = Sys.errIntr then checkStop(pid); end;
+    until (r = pid) and (how # Sys.Status.stopped);
+end;
+
+(* Looks at the watched files: puts the time and size of each into
+   stamps, Rgraph.Missing for one that is not there, and returns how
+   many are there. *)
+proc look(var stamps: Stamps.Vec): INT;
+var names: [][]U8; info: Sys.Info; i, e, count: INT;
+begin
+    Stamps.reset(stamps);
+    names := Names.all(watched);
+    for i := 0 to LEN(names) - 1 do
+        info, e := Sys.info(names[i]);
+        if e = 0 then
+            Stamps.push(stamps, info.mtime);
+            Stamps.push(stamps, info.size);
+            INC(count);
+        else
+            Stamps.push(stamps, Rgraph.Missing);
+            Stamps.push(stamps, Rgraph.Missing);
+        end;
+    end;
+    return count;
+end;
+
+(* Whether two looks saw the same. *)
+proc same(const a, b: Stamps.Vec): BOOL;
+var x, y: []I64; i: INT;
+begin
+    x := Stamps.all(a);
+    y := Stamps.all(b);
+    if LEN(x) # LEN(y) then return false; end;
+    for i := 0 to LEN(x) - 1 do
+        if x[i] # y[i] then return false; end;
+    end;
+    return true;
+end;
+
+(* Runs round in a copy of robbie, and returns once it has ended,
+   with watched what it sent and seen the look taken as it began.
+   Exits with ExitUsage when there can be no copy. *)
+proc runRound(round: Round; var seen: Stamps.Vec): INT;
+var r, w, pid, i, count: INT;
+begin
+    r, w := Sys.pipe();
+    if r < 0 then Rbase.fatal(Rbase.Nowhere, ["cannot make a pipe: ", Rbase.reason(r)]); end;
+    (* what Out holds would be written twice, by both *)
+    Out.flush;
+    pid := Sys.fork();
+    if pid < 0 then Rbase.fatal(Rbase.Nowhere, ["cannot start a round: ", Rbase.reason(pid)]); end;
+    if pid = 0 then
+        Sys.close(r);
+        for i := 0 to LEN(Stops) - 1 do Rterm.unstop(Stops[i]); end;
+        toWatch := w;
+        Rt.exit(round());
+    end;
+    Sys.close(w);
+    readWatched(r, pid);
+    Sys.close(r);
+    count := look(seen);
+    waitRound(pid);
+    return count;
+end;
+
+(* Waits one look's time; a stop signal ends robbie at once. *)
+proc nap;
+begin
+    (* a poll of no file, which a signal breaks into, as Sys.sleep
+       doesn't *)
+    _ := Sys.ready(-1, WatchMs);
+    checkStop(0);
+end;
+
+(* Waits until a look differs from seen, and then until one look more
+   sees nothing new. now is room for the looks. *)
+proc waitChange(var seen, now: Stamps.Vec);
+var spare: Stamps.Vec;
+begin
+    repeat
+        nap;
+        _ := look(now);
+    until not same(now, seen);
+    repeat
+        spare := seen;
+        seen := now;
+        now := spare;
+        nap;
+        _ := look(now);
+    until same(now, seen);
+end;
+
+(* Tells, the first time it is so, that only robfiles are watched, as
+   the targets need no file, and how a task names files to watch. *)
+proc noteBareTasks;
+begin
+    if noted or not bare then return; end;
+    noted := true;
+    Rbase.report(Rbase.Nowhere, ["the targets need no file, so only the robfile is watched; ",
+        "a task watches the files it names after its colon, as in 'task test: src/*.raz'"]);
+end;
+
+(* Runs round, and again whenever a file it reaches changes, until a
+   stop signal ends robbie with 128 plus the signal. robfile is
+   watched until a round has said what else to. Never returns. *)
+proc watch*(robfile: []U8; round: Round);
+var seen, now: Stamps.Vec; files: []U8; i, count: INT;
+begin
+    Stamps.init(seen, Heap.heap);
+    Stamps.init(now, Heap.heap);
+    Names.push(watched, robfile);
+    robfiles := 1;
+    for i := 0 to LEN(Stops) - 1 do Rterm.stopper(Stops[i]); end;
+    while true do
+        if Sys.isTerminal(Sys.stdout) then
+            Rterm.home;
+            Rterm.clearScreen;
+        end;
+        count := runRound(round, seen);
+        noteBareTasks;
+        files := " files";
+        if count = 1 then files := " file"; end;
+        Rterm.paint(Rterm.Style.faint);
+        Out.str(Rbase.join(["watching ", Rbase.num(count), files, "; ^C stops"]));
+        Rterm.paint(Rterm.Style.plain);
+        Rterm.endLine;
+        Out.flush;
+        waitChange(seen, now);
+    end;
+end;
+
+begin
+    toWatch := -1;
+    Names.init(watched, Heap.heap);
+end Rwatch.

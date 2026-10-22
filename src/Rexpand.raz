@@ -108,7 +108,7 @@ var
 (* The variables, in the order they were first set. *)
 proc allVars*: []Var;
 begin
-    return Vars.all(ADR(vars));
+    return Vars.all(vars);
 end;
 
 (* The index in allVars of the variable called name, or -1 when there
@@ -133,7 +133,7 @@ var i: INT; v: ^Var;
 begin
     i := findVar(name);
     if i < 0 then
-        v := Vars.add(ADR(vars));
+        v := Vars.add(vars);
         v^.name := name;
     else
         v := ADR(allVars()[i]);
@@ -300,30 +300,30 @@ end;
 proc globNames*(w: Rbase.Where; word: []U8): []U8;
 var b: Buf.Buf; g: Glob; pattern, list: []U8; status: I32; i: UINT; name: ^U8; n, k: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     for k := 0 to LEN(word) - 1 do
-        if (word[k] = '?') or (word[k] = '[') or (word[k] = '\\') then Buf.add(ADR(b), '\\'); end;
-        Buf.add(ADR(b), word[k]);
+        if (word[k] = '?') or (word[k] = '[') or (word[k] = '\\') then Buf.add(b, '\\'); end;
+        Buf.add(b, word[k]);
     end;
-    Buf.add(ADR(b), 0);
-    pattern := Buf.bytes(ADR(b));
+    Buf.add(b, 0);
+    pattern := Buf.bytes(b);
     status := glob(ADR(pattern[0]), 0, nil, ADR(g));
     if (status # 0) and (status # GlobNoMatch) then
         Rbase.fatal(w, ["cannot expand '", word, "'"]);
     end;
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     if status = 0 then
         for i := 0 to g.count - 1 do
-            if i > 0 then Buf.add(ADR(b), ' '); end;
+            if i > 0 then Buf.add(b, ' '); end;
             name := g.names[i];
             n := 0;
             while name[n] # 0 do INC(n); end;
-            Buf.str(ADR(b), name[0..n]);
+            Buf.str(b, name[0..n]);
         end;
         globfree(ADR(g));
     end;
-    list := Rbase.keep(Buf.bytes(ADR(b)));
+    list := Rbase.keep(Buf.bytes(b));
     return list;
 end;
 
@@ -359,7 +359,7 @@ begin
 end;
 
 (* Adds word to b, with each '*' in it replaced by stem. *)
-proc addStemmed(b: ^Buf.Buf; word, stem: []U8);
+proc addStemmed(var b: Buf.Buf; word, stem: []U8);
 var i: INT;
 begin
     for i := 0 to LEN(word) - 1 do
@@ -373,10 +373,10 @@ proc stemmed*(word, stem: []U8): []U8;
 var b: Buf.Buf; s: []U8;
 begin
     if stars(word) = 0 then return word; end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    addStemmed(ADR(b), word, stem);
-    s := Rbase.keep(Buf.bytes(ADR(b)));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    addStemmed(b, word, stem);
+    s := Rbase.keep(Buf.bytes(b));
     return s;
 end;
 
@@ -481,18 +481,18 @@ begin
     else
         list := valueOf(w, name);
     end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     word := nextWord(list, i);
     while LEN(word) > 0 do
         stem, ok := matches(pattern, word);
         if ok then
-            if b.len > 0 then Buf.add(ADR(b), ' '); end;
-            addStemmed(ADR(b), want, stem);
+            if b.len > 0 then Buf.add(b, ' '); end;
+            addStemmed(b, want, stem);
         end;
         word := nextWord(list, i);
     end;
-    s := Rbase.keep(Buf.bytes(ADR(b)));
+    s := Rbase.keep(Buf.bytes(b));
     return s;
 end;
 
@@ -508,8 +508,8 @@ var
     name, want, pattern, value, r: []U8;
     ok: BOOL;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     while i < LEN(s) do
         (* a brace just after a '$' is the shell's, as in ${HOME} *)
         if (s[i] # '{') or ((i > 0) and (s[i - 1] = '$')) then
@@ -518,7 +518,7 @@ begin
         end;
         if (i + 1 < LEN(s)) and (s[i + 1] = '{') then
             (* keep the first brace of the two, drop the second *)
-            Buf.str(ADR(b), s[start..i + 1]);
+            Buf.str(b, s[start..i + 1]);
             i := i + 2;
             start := i;
             continue;
@@ -538,17 +538,17 @@ begin
             end;
             value := comprehension(w, want, pattern, name);
         end;
-        Buf.str(ADR(b), s[start..i]);
-        Buf.str(ADR(b), value);
+        Buf.str(b, s[start..i]);
+        Buf.str(b, value);
         i := j;
         start := i;
     end;
     if start = 0 then return s; end;
-    Buf.str(ADR(b), s[start..LEN(s)]);
-    r := Rbase.keep(Buf.bytes(ADR(b)));
+    Buf.str(b, s[start..LEN(s)]);
+    r := Rbase.keep(Buf.bytes(b));
     return r;
 end;
 
 begin
-    Vars.init(ADR(vars), Heap.heap);
+    Vars.init(vars, Heap.heap);
 end Rexpand.

@@ -46,48 +46,48 @@ done: nothing to do, in (time)
 exit 0
 $ robbie -x
 robbie: unknown flag -x
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -kx
 robbie: unknown flag -x
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j
 robbie: -j needs a value
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -C
 robbie: -C needs a value
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j 0
 robbie: -j wants a number from 1 to 1000, not '0'
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j 1001
 robbie: -j wants a number from 1 to 1000, not '1001'
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j 99999999999999999999
 robbie: -j wants a number from 1 to 1000, not '99999999999999999999'
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j 4x
 robbie: -j wants a number from 1 to 1000, not '4x'
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -j 
 robbie: -j wants a number from 1 to 1000, not ''
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -h
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 0
 $ robbie --help
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 0
 $ robbie -kh test
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 0
 $ robbie -C -h
 robbie: cannot change to -h: no such file or directory

@@ -34,3 +34,15 @@ what was wanted, what robbie does instead, and how much it cost.
   layout differs between C libraries. A `Files.glob`, sorted, with `*`
   alone a wildcard, would let robbie be a static program.
 
+- **No word from the kernel when a file changes.** `robbie -w` wants to
+  know when a watched file changes; with no inotify in `Sys` it looks at
+  the time and size of each every 300 ms, a stat per file per look and
+  up to 300 ms late. `Sys.watch(paths)`, an fd ready on a change, would
+  do.
+- **No sleep a signal breaks into.** Between looks `robbie -w` must see
+  Ctrl-C at once, but `Sys.sleep` sleeps on after EINTR. It naps in
+  `Sys.ready(-1, ms)`, a poll of no file, which a noted signal does
+  break: one line, but a trick. It can't `Sys.catch` the signals
+  instead, as raztest does, since each round is a forked copy that
+  would inherit them blocked, with no `Sys.uncatch` to give them back.
+  A `Sys.nap(ms): BOOL`, false when a signal came, would do.

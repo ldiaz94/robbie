@@ -119,6 +119,7 @@ robbie -j4 robbie.tar.gz             # up to four recipes at once
 robbie -n install                    # show what would run, run nothing
 robbie install prefix=/usr DESTDIR=pkg
 robbie -i                            # pick a task from the list, and run it
+robbie -w test                       # test again whenever a source file changes
 ```
 
 ## What else it does
@@ -141,6 +142,9 @@ robbie -i                            # pick a task from the list, and run it
 - **An interactive mode**, `robbie -i`: the listing on the terminal's
   alternate screen, filtered as you type, a target made on Enter, and its
   summary shown when you come back.
+- **A watch mode**, `robbie -w test`: makes the targets again whenever a
+  file they need, or the robfile, changes, until Ctrl-C. A task watches
+  the files it names after its colon.
 - **Plain text through a pipe.** Colour is only for a terminal, and never
   with `NO_COLOR`, so scripts and tests see the same words.
 

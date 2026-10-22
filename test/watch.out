@@ -1,0 +1,27 @@
+$ robbie -q -w copy; a.txt changes; Robfile breaks; SIGINT
+exit 130
+▸ copy
+done: 1 made, in (time)
+watching 2 files; ^C stops
+▸ copy
+done: 1 made, in (time)
+watching 2 files; ^C stops
+robbie: Robfile:5: expected 'name = value', 'target: inputs' or 'include file'
+watching 2 files; ^C stops
+one
+two
+$ robbie -q -w bare; SIGTERM
+exit 143
+▸ bare
+bare
+done: 1 made, in (time)
+robbie: the targets need no file, so only the robfile is watched; a task watches the files it names after its colon, as in 'task test: src/*.raz'
+watching 1 file; ^C stops
+$ robbie -w -n copy
+robbie: -w can't go with -i, -n or -p
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2
+$ robbie -w
+robbie: -w needs a target to make
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+exit 2

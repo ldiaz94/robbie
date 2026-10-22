@@ -62,7 +62,7 @@ robbie: Robfile:1: 'inputs' is robbie's own placeholder, not a variable name
 exit 2
 $ robbie -p stem=x
 robbie: 'stem' is robbie's own placeholder, not a variable name
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 --- a Robfile doubling a twelve times
 $ robbie -p | awk ...

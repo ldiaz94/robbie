@@ -1,6 +1,6 @@
 $ robbie -i hello
 robbie: -i takes no target; pick one from the list
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie -i
 robbie: -i needs a terminal

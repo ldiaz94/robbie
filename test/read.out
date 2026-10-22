@@ -146,9 +146,9 @@ robbie: cannot change to nothere: no such file or directory
 exit 2
 $ robbie a.b=c
 robbie: 'a.b' is not a variable name
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2
 $ robbie =x
 robbie: '' is not a variable name
-usage: robbie [-iknpq] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
+usage: robbie [-iknpqw] [-C dir] [-f file] [-j n] [name=value ...] [target ...]
 exit 2

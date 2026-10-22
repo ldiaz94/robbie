@@ -373,12 +373,12 @@ proc gather;
 var rs: []Rread.Rule; r: INT; tasks: BOOL;
 begin
     rs := Rread.allRules();
-    Ints.reset(ADR(picks));
+    Ints.reset(picks);
     tasks := true;
     repeat
         for r := 0 to LEN(rs) - 1 do
             if (rs[r].task = tasks) and not rs[r].pattern and holds(rs[r].target) then
-                Ints.push(ADR(picks), r);
+                Ints.push(picks, r);
             end;
         end;
         if tasks then pickTasks := picks.len; end;
@@ -431,7 +431,7 @@ begin
         end;
         if (line = 0) or ((pickTasks > 0) and (line = pickTasks + 2)) then i := -2; end;
         if i >= 0 then
-            showRule(Ints.all(ADR(picks))[i], nameW, descW, lineW, i = picked);
+            showRule(Ints.all(picks)[i], nameW, descW, lineW, i = picked);
         else
             if i = -2 then
                 if (line = 0) and (pickTasks > 0) then showHeading("tasks"); else showHeading("files"); end;
@@ -539,7 +539,7 @@ begin
         | Rterm.KeyUp: move(-1);
         | Rterm.KeyDown: move(1);
         | Rterm.KeyEnter:
-            if picks.len > 0 then runPick(Ints.all(ADR(picks))[picked], dryRun, quiet, keepGoing, jobs); end;
+            if picks.len > 0 then runPick(Ints.all(picks)[picked], dryRun, quiet, keepGoing, jobs); end;
         | Rterm.KeyEsc:
             if typing then filterLen := 0; gather; else quit := true; end;
         | Rterm.KeyBack, Rterm.KeyDelete:
@@ -549,7 +549,7 @@ begin
         | 'k': if not typing then move(-1); end;
         | 'n':
             if not typing and (picks.len > 0) then
-                runPick(Ints.all(ADR(picks))[picked], true, quiet, keepGoing, jobs);
+                runPick(Ints.all(picks)[picked], true, quiet, keepGoing, jobs);
             end;
         | else:
         end;
@@ -568,5 +568,5 @@ begin
 end;
 
 begin
-    Ints.init(ADR(picks), Heap.heap);
+    Ints.init(picks, Heap.heap);
 end Rshow.

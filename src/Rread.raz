@@ -65,7 +65,7 @@
    file, and Out for printRead. *)
 module Rread;
 import Sys, Out, Buf, Heap, Files, Rbase, Rexpand;
-import Rules := Vec(Rule), Lines := Vec(Line);
+import Rules := Vec(Rule), Lines := Vec(Line), Paths := Vec([]U8);
 
 type
     (* A rule: how to make one file or do one task. *)
@@ -108,6 +108,9 @@ var
     (* the lines of every recipe, in the order of the file, so that each
        rule's lines sit together *)
     recipes: Lines.Vec;
+    (* every robfile read, the first and each it includes, as named;
+       what robbie -w watches besides the files of the rules *)
+    paths: Paths.Vec;
     (* the innermost robfile being read; nil when none is *)
     reading: ^Open;
     (* the robfile being read, all of it, and the offset of the next
@@ -120,13 +123,19 @@ var
 (* The rules, in the order of the file. *)
 proc allRules*: []Rule;
 begin
-    return Rules.all(ADR(rules));
+    return Rules.all(rules);
+end;
+
+(* Every robfile read, the first and each it includes, as named. *)
+proc allPaths*: [][]U8;
+begin
+    return Paths.all(paths);
 end;
 
 (* The lines of every recipe; a rule's are count of them from first. *)
 proc allRecipes*: []Line;
 begin
-    return Lines.all(ADR(recipes));
+    return Lines.all(recipes);
 end;
 
 (* The index in allRules of the rule that makes target, or -1 when
@@ -152,10 +161,10 @@ var b: Buf.Buf; info: Sys.Info; e: INT;
 begin
     info, e := Sys.info(path);
     (* kept for as long as robbie runs, as its lines are slices of it *)
-    Buf.init(ADR(b), Heap.heap);
-    if e = 0 then e := Files.load(path, ADR(b)); end;
+    Buf.init(b, Heap.heap);
+    if e = 0 then e := Files.load(path, b); end;
     if e < 0 then Rbase.fatal(from, ["cannot read ", path, ": ", Rbase.reason(e)]); end;
-    return Buf.bytes(ADR(b)), info.dev, info.ino;
+    return Buf.bytes(b), info.dev, info.ino;
 end;
 
 (* Reads the next logical line of src, starting at cursor, into l, and
@@ -202,24 +211,24 @@ var
     i, k, start: INT;   (* s[start..] is still to be copied; a piece to copy ends at k *)
     r: []U8;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     while i < LEN(s) - 1 do
         if (s[i] = '\\') and (s[i + 1] = '\n') then
             k := i;
             while (k > start) and Rbase.isBlank(s[k - 1]) do DEC(k); end;
             i := i + 2;
             while (i < LEN(s)) and Rbase.isBlank(s[i]) do INC(i); end;
-            Buf.str(ADR(b), s[start..k]);
-            Buf.add(ADR(b), ' ');
+            Buf.str(b, s[start..k]);
+            Buf.add(b, ' ');
             start := i;
         else
             INC(i);
         end;
     end;
     if start = 0 then return s; end;
-    Buf.str(ADR(b), s[start..LEN(s)]);
-    r := Buf.bytes(ADR(b));
+    Buf.str(b, s[start..LEN(s)]);
+    r := Buf.bytes(b);
     (* a line that ended in a backslash with nothing after it *)
     if r[LEN(r) - 1] = ' ' then r := r[0..LEN(r) - 1]; end;
     r := Rbase.keep(r);
@@ -312,14 +321,14 @@ begin
     r.note := Rexpand.expanded(above, note);
     r.where := w;
     r.first := recipes.len;
-    Rules.push(ADR(rules), r);
+    Rules.push(rules, r);
 end;
 
 (* Adds a line of text, at w, to the recipe of the last rule. *)
 proc addLine(w: Rbase.Where; text: []U8);
 var rs: []Rule;
 begin
-    Lines.push(ADR(recipes), {where: w, text: text});
+    Lines.push(recipes, {where: w, text: text});
     rs := allRules();
     INC(rs[LEN(rs) - 1].count);
 end;
@@ -387,6 +396,7 @@ begin
     outerCursor := cursor;
     outerLine := lineNo;
     src, open.dev, open.ino := slurp(origin, path);
+    Paths.push(paths, path);
     (* a file already on the chain includes itself, however indirectly *)
     q := reading;
     while q # nil do
@@ -495,6 +505,7 @@ begin
 end;
 
 begin
-    Rules.init(ADR(rules), Heap.heap);
-    Lines.init(ADR(recipes), Heap.heap);
+    Rules.init(rules, Heap.heap);
+    Lines.init(recipes, Heap.heap);
+    Paths.init(paths, Heap.heap);
 end Rread.

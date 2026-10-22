@@ -148,21 +148,21 @@ var me: Rgraph.Node; es: []INT; input: []U8; inputs, newer: Buf.Buf; i: INT;
 begin
     me := Rgraph.node(n)^;
     es := Rgraph.allEdges()[me.first..me.first + me.count];
-    Buf.init(ADR(inputs), Heap.heap);
-    defer Buf.done(ADR(inputs));
-    Buf.init(ADR(newer), Heap.heap);
-    defer Buf.done(ADR(newer));
+    Buf.init(inputs, Heap.heap);
+    defer Buf.done(inputs);
+    Buf.init(newer, Heap.heap);
+    defer Buf.done(newer);
     if LEN(es) > 0 then input := Rgraph.node(es[0])^.name; end;
     for i := 0 to LEN(es) - 1 do
-        if i > 0 then Buf.add(ADR(inputs), ' '); end;
-        Buf.str(ADR(inputs), Rgraph.node(es[i])^.name);
+        if i > 0 then Buf.add(inputs, ' '); end;
+        Buf.str(inputs, Rgraph.node(es[i])^.name);
         if isNewer(n, es[i], dryRun) then
-            if newer.len > 0 then Buf.add(ADR(newer), ' '); end;
-            Buf.str(ADR(newer), Rgraph.node(es[i])^.name);
+            if newer.len > 0 then Buf.add(newer, ' '); end;
+            Buf.str(newer, Rgraph.node(es[i])^.name);
         end;
     end;
-    Rexpand.setOwn(me.name, input, Rbase.keep(Buf.bytes(ADR(inputs))),
-        Rbase.keep(Buf.bytes(ADR(newer))), me.stem, Rread.allRules()[me.rule].pattern);
+    Rexpand.setOwn(me.name, input, Rbase.keep(Buf.bytes(inputs)),
+        Rbase.keep(Buf.bytes(newer)), me.stem, Rread.allRules()[me.rule].pattern);
 end;
 
 (* Fills in the recipe of node n into lines, a filled-in line for each
@@ -172,11 +172,11 @@ proc fill(n: INT; dryRun: BOOL);
 var r: Rread.Rule; ls: []Rread.Line; i: INT;
 begin
     setOwnFor(n, dryRun);
-    Texts.reset(ADR(lines));
+    Texts.reset(lines);
     r := Rread.allRules()[Rgraph.node(n)^.rule];
     ls := Rread.allRecipes();
     for i := r.first to r.first + r.count - 1 do
-        Texts.push(ADR(lines), Rexpand.expanded(ls[i].where, ls[i].text));
+        Texts.push(lines, Rexpand.expanded(ls[i].where, ls[i].text));
     end;
     Rexpand.clearOwn;
 end;
@@ -213,10 +213,10 @@ end;
 
 (* Adds to b, the summary being built, the part 'n what', when n isn't
    0, with a comma before it unless it is the first part. *)
-proc part(b: ^Buf.Buf; n: INT; what: []U8);
+proc part(var b: Buf.Buf; n: INT; what: []U8);
 begin
     if n = 0 then return; end;
-    if b^.len > 0 then Buf.str(b, ", "); end;
+    if b.len > 0 then Buf.str(b, ", "); end;
     Buf.str(b, Rbase.num(n));
     Buf.add(b, ' ');
     Buf.str(b, what);
@@ -231,22 +231,22 @@ end;
 proc showSummary(made, failed, skipped, current: INT; ms: I64);
 var b: Buf.Buf; hundredths: []U8;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    part(ADR(b), made, "made");
-    part(ADR(b), failed, "failed");
-    part(ADR(b), skipped, "not made");
-    part(ADR(b), current, "up to date");
-    if b.len = 0 then Buf.str(ADR(b), "nothing to do"); end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    part(b, made, "made");
+    part(b, failed, "failed");
+    part(b, skipped, "not made");
+    part(b, current, "up to date");
+    if b.len = 0 then Buf.str(b, "nothing to do"); end;
     (* hundredths of a second, which is as fine as a person cares about *)
     hundredths := Rbase.num(ms mod 1000 div 10 + 100);
     lastFailed := (failed > 0) or (skipped > 0);
     if lastFailed then
-        lastLine := Rbase.join(["failed: ", Buf.bytes(ADR(b)), ", in ", Rbase.num(ms div 1000), ".",
+        lastLine := Rbase.join(["failed: ", Buf.bytes(b), ", in ", Rbase.num(ms div 1000), ".",
             hundredths[1..3], "s"]);
         Rterm.paint(Rterm.Style.failure);
     else
-        lastLine := Rbase.join(["done: ", Buf.bytes(ADR(b)), ", in ", Rbase.num(ms div 1000), ".",
+        lastLine := Rbase.join(["done: ", Buf.bytes(b), ", in ", Rbase.num(ms div 1000), ".",
             hundredths[1..3], "s"]);
         Rterm.paint(Rterm.Style.success);
     end;
@@ -273,7 +273,7 @@ begin
     for i := 0 to LEN(Stoppers) - 1 do
         if Sys.came(Stoppers[i]) and (caught = 0) then
             caught := Stoppers[i];
-            cs := Children.all(ADR(children));
+            cs := Children.all(children);
             for i := 0 to LEN(cs) - 1 do _ := Sys.kill(cs[i].pid, caught); end;
             return true;
         end;
@@ -284,7 +284,7 @@ end;
 (* Dies of the signal sig, with its default action, so that whatever
    ran robbie sees it end by that signal. Exits with 128 + sig, as a
    shell would report it, should the signal not kill it. *)
-proc die(sig: INT);
+proc die*(sig: INT);
 begin
     Out.flush;
     _ := Sys.ignore(sig, false);
@@ -300,14 +300,14 @@ end;
 proc start: INT;
 var b: Buf.Buf; ls: [][]U8; script: []U8; i, pid: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    ls := Texts.all(ADR(lines));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    ls := Texts.all(lines);
     for i := 0 to LEN(ls) - 1 do
-        if i > 0 then Buf.add(ADR(b), '\n'); end;
-        Buf.str(ADR(b), ls[i]);
+        if i > 0 then Buf.add(b, '\n'); end;
+        Buf.str(b, ls[i]);
     end;
-    script := Buf.bytes(ADR(b));
+    script := Buf.bytes(b);
     (* what robbie has written but not yet flushed would otherwise come
        out after the recipe's own output *)
     Out.flush;
@@ -343,7 +343,7 @@ var me: Rgraph.Node; es: []INT; ps: []Phase; i: INT;
 begin
     me := Rgraph.node(n)^;
     es := Rgraph.allEdges();
-    ps := Phases.all(ADR(phase));
+    ps := Phases.all(phase);
     for i := me.first to me.first + me.count - 1 do
         if ps[es[i]] # done then return false; end;
     end;
@@ -358,7 +358,7 @@ proc nextReady(var from: INT): INT;
 var plan: []INT; ps: []Phase; i: INT;
 begin
     plan := Rgraph.allPlan();
-    ps := Phases.all(ADR(phase));
+    ps := Phases.all(phase);
     while (from < LEN(plan)) and (ps[plan[from]] # waiting) do INC(from); end;
     for i := from to LEN(plan) - 1 do
         if (ps[plan[i]] = waiting) and ready(plan[i]) then return i; end;
@@ -375,7 +375,7 @@ end;
 proc launch(n: INT; dryRun, quiet: BOOL);
 var me: Rgraph.Node; r: Rread.Rule; ls: [][]U8; m, j, pid: INT;
 begin
-    Phases.all(ADR(phase))[n] := done;
+    Phases.all(phase)[n] := done;
     me := Rgraph.node(n)^;
     r := Rread.allRules()[me.rule];
     m := brokenInput(n);
@@ -390,7 +390,7 @@ begin
     showHeader(me.name);
     if dryRun or not quiet then
         Rterm.paint(Rterm.Style.faint);
-        ls := Texts.all(ADR(lines));
+        ls := Texts.all(lines);
         for j := 0 to LEN(ls) - 1 do
             Out.str(ls[j]);
             (* ended before the line break, so no style runs past the line *)
@@ -400,8 +400,8 @@ begin
     end;
     if dryRun then return; end;
     pid := start();
-    Children.push(ADR(children), {pid: pid, node: n});
-    Phases.all(ADR(phase))[n] := running;
+    Children.push(children, {pid: pid, node: n});
+    Phases.all(phase)[n] := running;
 end;
 
 (* Waits for any recipe that is running to end, marks its node done,
@@ -418,14 +418,14 @@ begin
             Rbase.fatal(Rbase.Nowhere, ["cannot wait: ", Rbase.reason(pid)]);
         end;
     until (pid > 0) and (how # Sys.Status.stopped);   (* one stopped by Ctrl-Z hasn't ended *)
-    cs := Children.all(ADR(children));
+    cs := Children.all(children);
     i := 0;
     while cs[i].pid # pid do INC(i); end;
     n := cs[i].node;
-    Phases.all(ADR(phase))[n] := done;
+    Phases.all(phase)[n] := done;
     (* the last child takes the place of this one, as the order of
        children doesn't matter *)
-    cs[i], _ := Children.pop(ADR(children));
+    cs[i], _ := Children.pop(children);
     return n, how, value;
 end;
 
@@ -481,10 +481,10 @@ begin
     failedCount := 0;
     skippedCount := 0;
     (* every node done, on every call *)
-    Phases.reset(ADR(phase));
-    Phases.resize(ADR(phase), LEN(Rgraph.allNodes()));
+    Phases.reset(phase);
+    Phases.resize(phase, LEN(Rgraph.allNodes()));
     plan := Rgraph.allPlan();
-    for i := 0 to LEN(plan) - 1 do Phases.all(ADR(phase))[plan[i]] := waiting; end;
+    for i := 0 to LEN(plan) - 1 do Phases.all(phase)[plan[i]] := waiting; end;
     for i := 0 to LEN(Stoppers) - 1 do Rterm.stopper(Stoppers[i]); end;
     caught := 0;
     while true do
@@ -524,7 +524,7 @@ begin
 end;
 
 begin
-    Phases.init(ADR(phase), Heap.heap);
-    Children.init(ADR(children), Heap.heap);
-    Texts.init(ADR(lines), Heap.heap);
+    Phases.init(phase, Heap.heap);
+    Children.init(children, Heap.heap);
+    Texts.init(lines, Heap.heap);
 end Rjob.
