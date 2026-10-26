@@ -46,8 +46,8 @@ var
     printOnly: BOOL;    (* -p: print the rules and variables as they were read *)
     quiet: BOOL;        (* -q: don't echo recipe lines *)
     watch: BOOL;        (* -w: make the targets again whenever a file they need changes *)
-    dir: []U8;          (* -C: the directory to change to first; "" to stay put *)
-    robfile: []U8;      (* -f: the robfile to read, relative to dir *)
+    dir: []const U8;          (* -C: the directory to change to first; "" to stay put *)
+    robfile: []const U8;      (* -f: the robfile to read, relative to dir *)
     jobs: INT;          (* -j: how many recipes may run at once *)
     (* the first operand, as an argument number; ARGC() when there are
        none *)
@@ -55,7 +55,7 @@ var
 
 (* Reports a mistake on the command line, followed by the usage line,
    and exits with ExitUsage. *)
-proc usage(parts: [][]U8);
+proc usage(parts: [][]const U8);
 begin
     Rbase.report(Rbase.Nowhere, parts);
     Rbase.err(UsageLine);
@@ -77,8 +77,8 @@ end;
    next argument, number next. Moves k past the end of arg, and next
    past the argument when it was used. A flag with nothing after it is
    a usage error. *)
-proc flagValue(arg: []U8; var k, next: INT; flag: U8): []U8;
-var value: []U8;
+proc flagValue(arg: []const U8; var k, next: INT; flag: U8): []const U8;
+var value: []const U8;
 begin
     if k < LEN(arg) then
         value := arg[k..LEN(arg)];
@@ -95,7 +95,7 @@ end;
 (* The number of jobs s, the value of -j, asks for. Only plain digits
    are taken, and the number must lie between 1 and MaxJobs; anything
    else is a usage error. *)
-proc jobCount(s: []U8): INT;
+proc jobCount(s: []const U8): INT;
 var n: I64; i: INT; ok: BOOL;
 begin
     ok := LEN(s) > 0;
@@ -114,7 +114,7 @@ end;
    unknown flag, a missing value or a bad -j, and through showUsage on
    -h or --help. *)
 proc readFlags;
-var arg: []U8; i, k: INT; c: U8;
+var arg: []const U8; i, k: INT; c: U8;
 begin
     robfile := "Robfile";
     jobs := 1;
@@ -159,7 +159,7 @@ end;
    keeps 'robbie install DESTDIR=pkg' and 'DESTDIR=pkg robbie install'
    alike. *)
 proc readOverrides;
-var name, value: []U8; i: INT; isSet: BOOL;
+var name, value: []const U8; i: INT; isSet: BOOL;
 begin
     for i := firstOperand to ARGC() - 1 do
         name, value, isSet := Str.cut(Files.arg(i), "=");

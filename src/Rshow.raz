@@ -91,7 +91,7 @@ end;
 
 (* The number of columns s takes: its bytes, less those that continue a
    UTF-8 character. *)
-proc columns(s: []U8): INT;
+proc columns(s: []const U8): INT;
 var i, n: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -102,7 +102,7 @@ end;
 
 (* The longest start of s that takes at most n columns, never splitting
    a character. *)
-proc prefix(s: []U8; n: INT): []U8;
+proc prefix(s: []const U8; n: INT): []const U8;
 var i, cols: INT;
 begin
     while i < LEN(s) do
@@ -128,7 +128,7 @@ end;
 (* Writes s in at most n columns: whole when it fits, and otherwise cut
    short, ending in an ellipsis. Returns the number of columns
    written. *)
-proc putCut(s: []U8; n: INT): INT;
+proc putCut(s: []const U8; n: INT): INT;
 var cols: INT;
 begin
     if n <= 0 then return 0; end;
@@ -147,8 +147,8 @@ end;
 (* The full path of the robfile robfile, which is taken from the
    working directory unless it starts with a '/', with the home
    directory written as '~'. *)
-proc whereIs(robfile: []U8): []U8;
-var full, dir, home: []U8; e, n: INT;
+proc whereIs(robfile: []const U8): []const U8;
+var full, dir, home: []const U8; e, n: INT;
 begin
     full := robfile;
     if (LEN(robfile) = 0) or (robfile[0] # '/') then
@@ -173,7 +173,7 @@ end;
 
 (* Writes the first line of the listing, robbie's name and the path of
    robfile, cut to width. *)
-proc showTitle(robfile: []U8; width: INT);
+proc showTitle(robfile: []const U8; width: INT);
 begin
     (* the blanks either side of the name are part of its look *)
     Rterm.paint(Rterm.Style.title);
@@ -251,7 +251,7 @@ end;
 
 (* Writes the heading of a part of the listing, with a blank before
    it. *)
-proc showHeading(caption: []U8);
+proc showHeading(caption: []const U8);
 begin
     Out.char(' ');
     Rterm.paint(Rterm.Style.heading);
@@ -263,7 +263,7 @@ end;
    that is a task when tasks, and every other rule otherwise, in the
    order of the robfile, with a blank line above it. Writes nothing
    when there is no such rule. See showRule for the widths. *)
-proc showRules(caption: []U8; tasks: BOOL; nameW, descW, width: INT);
+proc showRules(caption: []const U8; tasks: BOOL; nameW, descW, width: INT);
 var rs: []Rread.Rule; r: INT; any: BOOL;
 begin
     rs := Rread.allRules();
@@ -342,7 +342,7 @@ end;
    whose graph has been built and surveyed: its title, then its tasks,
    its files and its variables, laid out in the width of the
    terminal. *)
-proc showListing*(robfile: []U8);
+proc showListing*(robfile: []const U8);
 var nameW, descW, lineW: INT;
 begin
     lineW := Rterm.width();
@@ -357,7 +357,7 @@ end;
 
 (* Whether name holds the filter, ignoring the case of ASCII letters; an
    empty filter is held by every name. *)
-proc holds(name: []U8): BOOL;
+proc holds(name: []const U8): BOOL;
 var i: INT;
 begin
     for i := 0 to LEN(name) - filterLen do
@@ -400,7 +400,7 @@ end;
 (* Draws the interactive listing over the screen: the title, as much of
    the list as fits, scrolled so that the cursor shows, and below it
    what can be typed, or the filter, and the last run's summary. *)
-proc draw(robfile: []U8);
+proc draw(robfile: []const U8);
 var lineW, nameW, descW, rows, lines, line, i: INT;
 begin
     lineW := Rterm.width();
@@ -478,7 +478,7 @@ end;
    The run's summary, led by the target's name, is shown below the list
    from then on. *)
 proc runPick(r: INT; dryRun, quiet, keepGoing: BOOL; jobs: INT);
-var target: []U8;
+var target: []const U8;
 begin
     target := Rread.allRules()[r].target;
     Rterm.screen(false);
@@ -523,7 +523,7 @@ end;
    there is none. Ctrl-C quits at once. quiet, keepGoing and jobs are
    passed on to Rjob.makePlan. The terminal is always put back as it
    was; a signal that stopped robbie is sent again after that. *)
-proc interact*(robfile: []U8; dryRun, quiet, keepGoing: BOOL; jobs: INT);
+proc interact*(robfile: []const U8; dryRun, quiet, keepGoing: BOOL; jobs: INT);
 var key: INT; typing, quit: BOOL;
 begin
     Rterm.raw(true);

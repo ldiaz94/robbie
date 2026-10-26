@@ -19,6 +19,7 @@
    Mem, Heap and Str for the text. *)
 module Rbase;
 import Sys, Rt, Out, Mem, Heap, Str;
+import SYSTEM;
 
 const
     (* the exit status for a bad robfile or a bad command line, and so
@@ -28,7 +29,7 @@ const
 type
     (* A place in a robfile, for messages. *)
     Where* = record
-        path*: []U8;    (* the robfile's name as robbie opened it; "" for a place in no robfile *)
+        path*: []const U8;    (* the robfile's name as robbie opened it; "" for a place in no robfile *)
         line*: INT;     (* the line, counted from 1; 0 for none *)
     end;
 
@@ -40,7 +41,7 @@ const
 
 (* The parts, one after another, as one new string on the heap, kept
    for as long as robbie runs. Stops robbie if the heap has no room. *)
-proc join*(parts: [][]U8): []U8;
+proc join*(parts: [][]const U8): []const U8;
 var n, at, i: INT; p: ^U8; s: []U8;
 begin
     for i := 0 to LEN(parts) - 1 do n := n + LEN(parts[i]); end;
@@ -57,13 +58,13 @@ end;
 
 (* A copy of s, kept for as long as robbie runs: for text in a buffer
    that will be used again. *)
-proc keep*(s: []U8): []U8;
+proc keep*(s: []const U8): []const U8;
 begin
     return join([s]);
 end;
 
 (* n in decimal, as a new string. *)
-proc num*(n: I64): []U8;
+proc num*(n: I64): []const U8;
 var digits: [20]U8; k: INT;
 begin
     digits, k := Str.fromInt(n);
@@ -85,7 +86,7 @@ end;
 (* Whether s is a name: a letter or '_', then any number of letters,
    digits and '_'. Only a name in braces is a placeholder, so this is
    also what keeps the shell's own braces out of robbie's way. *)
-proc isName*(s: []U8): BOOL;
+proc isName*(s: []const U8): BOOL;
 var i: INT;
 begin
     if (LEN(s) = 0) or Str.isDigit(s[0]) then return false; end;
@@ -98,7 +99,7 @@ end;
 (* ---------------------------------------------------------- messages *)
 
 (* s on standard error, once what standard output holds is out. *)
-proc err*(s: []U8);
+proc err*(s: []const U8);
 begin
     Out.flush;
     _ := Sys.write(Sys.stderr, s);
@@ -108,7 +109,7 @@ end;
    as 'robbie: file:line: message', leaving out whatever part of the
    place isn't known. For a mistake that takes more than one line, each
    with a place of its own, like a loop through several rules. *)
-proc report*(w: Where; parts: [][]U8);
+proc report*(w: Where; parts: [][]const U8);
 var i: INT;
 begin
     err("robbie: ");
@@ -123,7 +124,7 @@ end;
 
 (* Reports a mistake at w, as report does, and stops robbie with
    ExitUsage. *)
-proc fatal*(w: Where; parts: [][]U8);
+proc fatal*(w: Where; parts: [][]const U8);
 begin
     report(w, parts);
     Rt.exit(ExitUsage);
@@ -132,7 +133,7 @@ end;
 (* A few words saying what the error e, minus an errno as Sys gives
    it, means: robbie's own for the errors a robfile is likely to meet,
    and the C library's for the rest. *)
-proc reason*(e: INT): []U8;
+proc reason*(e: INT): []const U8;
 begin
     match -e of
     | 2: return "no such file or directory";

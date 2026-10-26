@@ -38,7 +38,7 @@
    Out for what it prints. Robbie hands it the round to run. *)
 module Rwatch;
 import Sys, Rt, Out, Buf, Heap, Str, Rbase, Rread, Rgraph, Rterm, Rjob;
-import Names := Vec([]U8), Stamps := Vec(I64), Flags := Vec(BOOL);
+import Names := Vec([]const U8), Stamps := Vec(I64), Flags := Vec(BOOL);
 
 const
     (* how long to wait between looks at the watched files, in ms *)
@@ -72,7 +72,7 @@ var
 
 (* Writes all of s to fd, through short and interrupted writes. Stops
    robbie when the pipe fails, as the watch has then gone. *)
-proc send(fd: INT; s: []U8);
+proc send(fd: INT; s: []const U8);
 var n: INT;
 begin
     while LEN(s) > 0 do
@@ -106,7 +106,7 @@ end;
    robfiles read, an empty name, then the files the goals need that no
    rule makes. Needs the goals named. Does nothing outside a round. *)
 proc sendWatched*;
-var b: Buf.Buf; seen: Flags.Vec; paths: [][]U8; goals: []INT; i: INT;
+var b: Buf.Buf; seen: Flags.Vec; paths: [][]const U8; goals: []INT; i: INT;
 begin
     if toWatch < 0 then return; end;
     Buf.init(b, Heap.heap);
@@ -150,7 +150,7 @@ end;
    pipe, into watched, with robfiles set. When it sends none, having
    stopped first, watched is left as it was. *)
 proc readWatched(fd, pid: INT);
-var b: Buf.Buf; chunk: [4096]U8; rest, name: []U8; n: INT; inRobfiles: BOOL;
+var b: Buf.Buf; chunk: [4096]U8; rest, name: []const U8; n: INT; inRobfiles: BOOL;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -194,7 +194,7 @@ end;
    stamps, Rgraph.Missing for one that is not there, and returns how
    many are there. *)
 proc look(var stamps: Stamps.Vec): INT;
-var names: [][]U8; info: Sys.Info; i, e, count: INT;
+var names: [][]const U8; info: Sys.Info; i, e, count: INT;
 begin
     Stamps.reset(stamps);
     names := Names.all(watched);
@@ -291,8 +291,8 @@ end;
 (* Runs round, and again whenever a file it reaches changes, until a
    stop signal ends robbie with 128 plus the signal. robfile is
    watched until a round has said what else to. Never returns. *)
-proc watch*(robfile: []U8; round: Round);
-var seen, now: Stamps.Vec; files: []U8; i, count: INT;
+proc watch*(robfile: []const U8; round: Round);
+var seen, now: Stamps.Vec; files: []const U8; i, count: INT;
 begin
     Stamps.init(seen, Heap.heap);
     Stamps.init(now, Heap.heap);

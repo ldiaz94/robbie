@@ -80,7 +80,7 @@
    the last run from lastLine and lastFailed. *)
 module Rjob;
 import Sys, Rt, Out, Buf, Heap, Rbase, Rread, Rgraph, Rexpand, Rterm;
-import Phases := Vec(Phase), Children := Vec(Child), Texts := Vec([]U8);
+import Phases := Vec(Phase), Children := Vec(Child), Texts := Vec([]const U8);
 
 const
     (* the exit status when a recipe failed *)
@@ -115,7 +115,7 @@ var
     lines: Texts.Vec;
     (* the summary of the last run, less its colour, and whether it
        failed, which the interactive mode shows below its list *)
-    lastLine*: []U8;
+    lastLine*: []const U8;
     lastFailed*: BOOL;
 
 (* ------------------------------------------------------- filling in *)
@@ -144,7 +144,7 @@ end;
    for while the recipe of node n is filled in. dryRun is passed on to
    isNewer. *)
 proc setOwnFor(n: INT; dryRun: BOOL);
-var me: Rgraph.Node; es: []INT; input: []U8; inputs, newer: Buf.Buf; i: INT;
+var me: Rgraph.Node; es: []INT; input: []const U8; inputs, newer: Buf.Buf; i: INT;
 begin
     me := Rgraph.node(n)^;
     es := Rgraph.allEdges()[me.first..me.first + me.count];
@@ -202,7 +202,7 @@ end;
 (* ------------------------------------------------------------ the run *)
 
 (* Writes the header that starts the making of name: '▸ name'. *)
-proc showHeader(name: []U8);
+proc showHeader(name: []const U8);
 begin
     Rterm.paint(Rterm.Style.header);
     Out.str("▸ ");
@@ -213,7 +213,7 @@ end;
 
 (* Adds to b, the summary being built, the part 'n what', when n isn't
    0, with a comma before it unless it is the first part. *)
-proc part(var b: Buf.Buf; n: INT; what: []U8);
+proc part(var b: Buf.Buf; n: INT; what: []const U8);
 begin
     if n = 0 then return; end;
     if b.len > 0 then Buf.str(b, ", "); end;
@@ -229,7 +229,7 @@ end;
    ms in milliseconds. Keeps the line, less its colour, in lastLine and
    lastFailed, for the interactive mode. *)
 proc showSummary(made, failed, skipped, current: INT; ms: I64);
-var b: Buf.Buf; hundredths: []U8;
+var b: Buf.Buf; hundredths: []const U8;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -257,7 +257,7 @@ end;
 
 (* Sets the summary of the last run to line, as the interactive mode
    tells of a run that was only shown, or of which target it was. *)
-proc setLastLine*(line: []U8; failed: BOOL);
+proc setLastLine*(line: []const U8; failed: BOOL);
 begin
     lastLine := line;
     lastFailed := failed;
@@ -298,7 +298,7 @@ end;
    the process it runs in, without waiting for it. Stops robbie when it
    can't start a process at all. *)
 proc start: INT;
-var b: Buf.Buf; ls: [][]U8; script: []U8; i, pid: INT;
+var b: Buf.Buf; ls: [][]const U8; script: []const U8; i, pid: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -318,7 +318,7 @@ end;
 
 (* A few words saying how a recipe that ended as how says, with value,
    failed: its exit status, or the signal that killed it. *)
-proc howFailed(how: Sys.Status; value: INT): []U8;
+proc howFailed(how: Sys.Status; value: INT): []const U8;
 begin
     if how = Sys.Status.killed then return Rbase.join(["killed by signal ", Rbase.num(value)]); end;
     return Rbase.join(["exit status ", Rbase.num(value)]);
@@ -373,7 +373,7 @@ end;
    any other is done at once, and one whose rule has no recipe gets no
    header and doesn't count as made. *)
 proc launch(n: INT; dryRun, quiet: BOOL);
-var me: Rgraph.Node; r: Rread.Rule; ls: [][]U8; m, j, pid: INT;
+var me: Rgraph.Node; r: Rread.Rule; ls: [][]const U8; m, j, pid: INT;
 begin
     Phases.all(phase)[n] := done;
     me := Rgraph.node(n)^;

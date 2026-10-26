@@ -81,9 +81,10 @@
    stems, globs and 'did you mean', Sys to read the times of files, and
    Map to find a node by its name. It changes nothing that Rread made. *)
 module Rgraph;
+import SYSTEM;
 import Sys, Str, Heap, Rbase, Rread, Rexpand;
 import Nodes := Vec(Node), Ints := Vec(INT), Flags := Vec(BOOL);
-import Names := Map([]U8, INT, Str.hash, Str.eq);
+import Names := Map([]const U8, INT, Str.hash, Str.eq);
 
 const
     (* the stamp of a file that is not there, or of a task: earlier than
@@ -97,10 +98,10 @@ type
 
     (* A name robbie can make or needs: a target or an input. *)
     Node* = record
-        name*: []U8;        (* the file or task *)
+        name*: []const U8;        (* the file or task *)
         rule*: INT;         (* the index in Rread.allRules of the rule that makes it,
                                plain or pattern; -1 when none does *)
-        stem*: []U8;        (* what the '*' of its rule stands for, when that rule is a
+        stem*: []const U8;        (* what the '*' of its rule stands for, when that rule is a
                                pattern; "" otherwise *)
         first*, count*: INT;   (* its inputs: count of allEdges from first, in the order
                                   first named *)
@@ -151,7 +152,7 @@ end;
 (* Node n; good until the next is added. *)
 proc node*(n: INT): ^Node;
 begin
-    return ADR(Nodes.all(nodes)[n]);
+    return SYSTEM.ADR(Nodes.all(nodes)[n]);
 end;
 
 (* Every node's inputs, as node numbers. *)
@@ -182,7 +183,7 @@ end;
 (* ------------------------------------------------------------- nodes *)
 
 (* The number of the node called name, or -1 when there is none. *)
-proc findNode*(name: []U8): INT;
+proc findNode*(name: []const U8): INT;
 var n: INT; ok: BOOL;
 begin
     n, ok := Names.get(names, name);
@@ -192,7 +193,7 @@ end;
 
 (* The number of the node called name, adding a node with no rule and
    no inputs when there is none. *)
-proc nodeFor(name: []U8): INT;
+proc nodeFor(name: []const U8): INT;
 var n: INT;
 begin
     n := findNode(name);
@@ -205,13 +206,13 @@ end;
 
 (* ---------------------------------------------------------- patterns *)
 
-proc canHave(name: []U8): BOOL; forward;
+proc canHave(name: []const U8): BOOL; forward;
 
 (* Whether every input of the pattern rule r, with its '*' standing for
    stem, exists or can be made. While it looks, r is marked as being
    tried, so the search below can't use it again. *)
-proc viable(r: INT; stem: []U8): BOOL;
-var inputs, word: []U8; i: INT; ok: BOOL;
+proc viable(r: INT; stem: []const U8): BOOL;
+var inputs, word: []const U8; i: INT; ok: BOOL;
 begin
     ok := true;
     Flags.all(trying)[r] := true;
@@ -229,8 +230,8 @@ end;
    whose inputs all exist or can be made, and what its '*' stands for;
    -1 and "" when there is none. Patterns being tried further up are
    passed over. *)
-proc patternFor(name: []U8): (INT, []U8);
-var rs: []Rread.Rule; stem: []U8; r: INT; ok: BOOL;
+proc patternFor(name: []const U8): (INT, []const U8);
+var rs: []Rread.Rule; stem: []const U8; r: INT; ok: BOOL;
 begin
     rs := Rread.allRules();
     for r := 0 to LEN(rs) - 1 do
@@ -245,7 +246,7 @@ end;
 (* Whether the file or task name exists or can be made: when some rule
    already makes its node, the file is there, or a pattern could make
    it. *)
-proc canHave(name: []U8): BOOL;
+proc canHave(name: []const U8): BOOL;
 var n, r, e: INT;
 begin
     n := findNode(name);
@@ -273,8 +274,8 @@ end;
 (* Gives node n an edge to each file the glob word matches, in the
    order of their names. A glob that matches nothing stops robbie with
    a message at n's rule. *)
-proc addGlob(n: INT; word: []U8);
-var list, name: []U8; i: INT;
+proc addGlob(n: INT; word: []const U8);
+var list, name: []const U8; i: INT;
 begin
     list := Rexpand.globNames(whereOf(n), word);
     if LEN(list) = 0 then
@@ -293,7 +294,7 @@ end;
    matches; in a pattern the '*' is n's stem. The edges are added as one
    run at the end of edges. *)
 proc addInputs(n: INT);
-var r: Rread.Rule; word: []U8; i: INT;
+var r: Rread.Rule; word: []const U8; i: INT;
 begin
     r := Rread.allRules()[node(n)^.rule];
     node(n)^.first := edges.len;
@@ -359,7 +360,7 @@ end;
    with a rule in the order of the nodes, so the loop reported is the
    same from one run to the next. *)
 proc settle;
-var i, r: INT; stem: []U8;
+var i, r: INT; stem: []const U8;
 begin
     while matched < nodes.len do
         if node(matched)^.rule < 0 then
@@ -408,8 +409,8 @@ end;
    loops. A name no rule makes is a mistake, reported with the closest
    target there is, when one is close enough to be a typo; this stops
    robbie. *)
-proc want*(name: []U8);
-var ns: []Node; gs: []INT; guess: []U8; i, n, dist: INT;
+proc want*(name: []const U8);
+var ns: []Node; gs: []INT; guess: []const U8; i, n, dist: INT;
 begin
     n := nodeFor(name);
     settle;
@@ -438,7 +439,7 @@ end;
    another reason, such as one in a directory it may not search, stops
    robbie with a message at w, the place of a rule that makes or needs
    it, rather than being taken for missing and made again. *)
-proc stampOf*(w: Rbase.Where; name: []U8): I64;
+proc stampOf*(w: Rbase.Where; name: []const U8): I64;
 var info: Sys.Info; e: INT;
 begin
     info, e := Sys.info(name);

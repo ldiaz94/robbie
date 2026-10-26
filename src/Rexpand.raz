@@ -57,14 +57,15 @@
    isOwnPlaceholder to refuse a variable on the command line that has
    the name of one. *)
 module Rexpand;
+import SYSTEM;
 import Buf, Heap, Rbase;
 import Vars := Vec(Var);
 
 type
     (* A variable. *)
     Var* = record
-        name*: []U8;    (* its name *)
-        value*: []U8;   (* its value: from the robfile, expanded and with blanks at
+        name*: []const U8;    (* its name *)
+        value*: []const U8;   (* its value: from the robfile, expanded and with blanks at
                            either end removed; from the command line, as it was given *)
         fixed*: BOOL;   (* set on the command line, which the robfile can't override *)
     end;
@@ -82,7 +83,7 @@ type
 const
     (* robbie's own placeholders, which name parts of the rule being
        made; stem is the last *)
-    OwnNames: [5][]U8 = ["target", "input", "inputs", "newer", "stem"];
+    OwnNames: [5][]const U8 = ["target", "input", "inputs", "newer", "stem"];
     Stem = 4;
     (* what glob(3) returns when the pattern matched nothing *)
     GlobNoMatch = 3;
@@ -95,7 +96,7 @@ var
     vars: Vars.Vec;
     (* what each of OwnNames stands for, in the same order, while a
        recipe is being filled in *)
-    ownValues: [5][]U8;
+    ownValues: [5][]const U8;
     (* whether ownValues holds anything: true only between setOwn and
        clearOwn *)
     inRecipe: BOOL;
@@ -114,7 +115,7 @@ end;
 (* The index in allVars of the variable called name, or -1 when there
    is none. A robfile has a handful of variables, so a straight search
    is fast enough. *)
-proc findVar*(name: []U8): INT;
+proc findVar*(name: []const U8): INT;
 var vs: []Var; i: INT;
 begin
     vs := allVars();
@@ -128,7 +129,7 @@ end;
    is new. A fixed value comes from the command line: a later fixed
    value replaces it, but one that isn't fixed, from the robfile, is
    ignored. *)
-proc setVar*(name, value: []U8; fixed: BOOL);
+proc setVar*(name, value: []const U8; fixed: BOOL);
 var i: INT; v: ^Var;
 begin
     i := findVar(name);
@@ -136,7 +137,7 @@ begin
         v := Vars.add(vars);
         v^.name := name;
     else
-        v := ADR(allVars()[i]);
+        v := SYSTEM.ADR(allVars()[i]);
     end;
     if v^.fixed and not fixed then return; end;
     v^.value := value;
@@ -147,7 +148,7 @@ end;
 
 (* The index in OwnNames of name, or -1 when it is not one of robbie's
    own placeholders. *)
-proc ownIndex(name: []U8): INT;
+proc ownIndex(name: []const U8): INT;
 var i: INT;
 begin
     for i := 0 to LEN(OwnNames) - 1 do
@@ -157,7 +158,7 @@ begin
 end;
 
 (* Whether name is one of robbie's own placeholders. *)
-proc isOwnPlaceholder*(name: []U8): BOOL;
+proc isOwnPlaceholder*(name: []const U8): BOOL;
 begin
     return ownIndex(name) >= 0;
 end;
@@ -166,7 +167,7 @@ end;
    clearOwn: the parts of the rule whose recipe is about to be filled
    in. pattern says whether that rule is a pattern; only a pattern has
    a stem, so {stem} anywhere else is a mistake. *)
-proc setOwn*(target, input, inputs, newer, stem: []U8; pattern: BOOL);
+proc setOwn*(target, input, inputs, newer, stem: []const U8; pattern: BOOL);
 begin
     ownValues := [target, input, inputs, newer, stem];
     inPattern := pattern;
@@ -188,7 +189,7 @@ end;
    Levenshtein's, filled a row at a time, keeping only the last three
    rows, which the swap needs. Names are cut to 255 bytes, which no
    name worth suggesting comes near. *)
-proc distance(a, b: []U8): INT;
+proc distance(a, b: []const U8): INT;
 var
     (* the rows for a[0..i-2], a[0..i-1] and a[0..i]: entry j is the
        distance from that prefix of a to b[0..j] *)
@@ -229,7 +230,7 @@ end;
    one mistyped the one for the other. Start with best empty and dist
    at the largest INT, and call this once for every known name; Rgraph
    does, for a target named on the command line. *)
-proc weigh*(typed, known: []U8; var best: []U8; var dist: INT);
+proc weigh*(typed, known: []const U8; var best: []const U8; var dist: INT);
 var d, most: INT;
 begin
     most := LEN(typed) div 3;
@@ -244,8 +245,8 @@ end;
 (* The known name closest to name, or "" when none is close enough. The
    candidates are robbie's own placeholders and the variables set so
    far, and the first of equally close ones wins. *)
-proc suggest(name: []U8): []U8;
-var best: []U8; dist, i: INT; vs: []Var;
+proc suggest(name: []const U8): []const U8;
+var best: []const U8; dist, i: INT; vs: []Var;
 begin
     dist := 7FFFFFFFFFFFFFFFH;
     for i := 0 to LEN(OwnNames) - 1 do weigh(name, OwnNames[i], best, dist); end;
@@ -256,8 +257,8 @@ end;
 
 (* Reports that the placeholder called name, at w, means nothing, with
    a hint at what might have been meant, and stops robbie. *)
-proc unknown(w: Rbase.Where; name: []U8);
-var guess: []U8;
+proc unknown(w: Rbase.Where; name: []const U8);
+var guess: []const U8;
 begin
     if isOwnPlaceholder(name) then
         Rbase.fatal(w, ["{", name, "} can only be used in a recipe"]);
@@ -281,7 +282,7 @@ end;
 
 (* The word of the list s at or after byte i, and i moved past it; ""
    when only blanks are left. *)
-proc nextWord*(s: []U8; var i: INT): []U8;
+proc nextWord*(s: []const U8; var i: INT): []const U8;
 var start: INT;
 begin
     while (i < LEN(s)) and isListBlank(s[i]) do INC(i); end;
@@ -297,8 +298,8 @@ end;
    wildcard: '?', '[' and '\' get a backslash before glob(3) sees them.
    Stops robbie with a message at w when glob(3) fails for any other
    reason. *)
-proc globNames*(w: Rbase.Where; word: []U8): []U8;
-var b: Buf.Buf; g: Glob; pattern, list: []U8; status: I32; i: UINT; name: ^U8; n, k: INT;
+proc globNames*(w: Rbase.Where; word: []const U8): []const U8;
+var b: Buf.Buf; g: Glob; pattern, list: []const U8; status: I32; i: UINT; name: ^U8; n, k: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -308,7 +309,7 @@ begin
     end;
     Buf.add(b, 0);
     pattern := Buf.bytes(b);
-    status := glob(ADR(pattern[0]), 0, nil, ADR(g));
+    status := glob(SYSTEM.PTR(pattern), 0, nil, SYSTEM.ADR(g));
     if (status # 0) and (status # GlobNoMatch) then
         Rbase.fatal(w, ["cannot expand '", word, "'"]);
     end;
@@ -321,7 +322,7 @@ begin
             while name[n] # 0 do INC(n); end;
             Buf.str(b, name[0..n]);
         end;
-        globfree(ADR(g));
+        globfree(SYSTEM.ADR(g));
     end;
     list := Rbase.keep(Buf.bytes(b));
     return list;
@@ -330,7 +331,7 @@ end;
 (* ------------------------------------------------------------ stems *)
 
 (* How many times '*' appears in s. *)
-proc stars*(s: []U8): INT;
+proc stars*(s: []const U8): INT;
 var i, n: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -345,7 +346,7 @@ end;
    one byte left between them for the '*' to stand for: those bytes,
    a slice of name, are the stem. So build/a.o fits build/*.o, with the
    stem a. *)
-proc matches*(pattern, name: []U8): ([]U8, BOOL);
+proc matches*(pattern, name: []const U8): ([]const U8, BOOL);
 var k, tail: INT;
 begin
     k := 0;
@@ -359,7 +360,7 @@ begin
 end;
 
 (* Adds word to b, with each '*' in it replaced by stem. *)
-proc addStemmed(var b: Buf.Buf; word, stem: []U8);
+proc addStemmed(var b: Buf.Buf; word, stem: []const U8);
 var i: INT;
 begin
     for i := 0 to LEN(word) - 1 do
@@ -369,8 +370,8 @@ end;
 
 (* word with each '*' in it replaced by stem: word itself when it has
    none, and otherwise a new string. *)
-proc stemmed*(word, stem: []U8): []U8;
-var b: Buf.Buf; s: []U8;
+proc stemmed*(word, stem: []const U8): []const U8;
+var b: Buf.Buf; s: []const U8;
 begin
     if stars(word) = 0 then return word; end;
     Buf.init(b, Heap.heap);
@@ -386,7 +387,7 @@ end;
    while a recipe is being filled in, or a variable. Stops robbie with
    a message at w when it stands for nothing, or when it is {stem}
    outside a pattern. *)
-proc valueOf(w: Rbase.Where; name: []U8): []U8;
+proc valueOf(w: Rbase.Where; name: []const U8): []const U8;
 var v: INT;
 begin
     v := ownIndex(name);
@@ -400,7 +401,7 @@ begin
 end;
 
 (* Moves j past the blanks there; whether there were any. *)
-proc skipBlanks(s: []U8; var j: INT): BOOL;
+proc skipBlanks(s: []const U8; var j: INT): BOOL;
 var start: INT;
 begin
     start := j;
@@ -410,7 +411,7 @@ end;
 
 (* The word at j, which ends at a blank or a brace, and j moved past
    it. *)
-proc token(s: []U8; var j: INT): []U8;
+proc token(s: []const U8; var j: INT): []const U8;
 var start: INT;
 begin
     start := j;
@@ -420,7 +421,7 @@ end;
 
 (* Whether the keyword k, and a blank, are at j; j is moved past the
    keyword when they are. *)
-proc keyword(s: []U8; var j: INT; k: []U8): BOOL;
+proc keyword(s: []const U8; var j: INT; k: []const U8): BOOL;
 begin
     if (j + LEN(k) < LEN(s)) and (s[j..j + LEN(k)] = k) and Rbase.isBlank(s[j + LEN(k)]) then
         j := j + LEN(k);
@@ -436,8 +437,8 @@ end;
    the byte after the closing brace, the three parts, name "" for the
    first form, and true; or false when what is there is not a
    comprehension. *)
-proc readComprehension(s: []U8; i: INT): (INT, []U8, []U8, []U8, BOOL);
-var j, start: INT; want, pattern, name: []U8;
+proc readComprehension(s: []const U8; i: INT): (INT, []const U8, []const U8, []const U8, BOOL);
+var j, start: INT; want, pattern, name: []const U8;
 begin
     j := i + 1;
     want := token(s, j);
@@ -469,8 +470,8 @@ end;
    out. A glob that matches nothing, like one among a rule's inputs, is
    an error, and stops robbie with a message at w; so do a pattern with
    two '*' and an unknown name. *)
-proc comprehension(w: Rbase.Where; want, pattern, name: []U8): []U8;
-var b: Buf.Buf; list, word, stem, s: []U8; i: INT; ok: BOOL;
+proc comprehension(w: Rbase.Where; want, pattern, name: []const U8): []const U8;
+var b: Buf.Buf; list, word, stem, s: []const U8; i: INT; ok: BOOL;
 begin
     if stars(pattern) > 1 then
         Rbase.fatal(w, ["a pattern has one '*', not '", pattern, "'"]);
@@ -501,11 +502,11 @@ end;
    brace by a single one: s itself when there is nothing to replace,
    and otherwise a new string. An unknown name stops robbie with a
    message at w. *)
-proc expanded*(w: Rbase.Where; s: []U8): []U8;
+proc expanded*(w: Rbase.Where; s: []const U8): []const U8;
 var
     b: Buf.Buf;
     i, j, start: INT;    (* s[start..i] is text still to be copied as it is *)
-    name, want, pattern, value, r: []U8;
+    name, want, pattern, value, r: []const U8;
     ok: BOOL;
 begin
     Buf.init(b, Heap.heap);

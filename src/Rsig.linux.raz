@@ -8,11 +8,13 @@
    is too. *)
 module Rsig;
 
+import SYSTEM;
+
 (* Whether the signal sig is ignored now. *)
 proc ignored*(sig: INT): BOOL;
 var act: [4]U64;   (* struct sigaction: its handler first, 1 for SIG_IGN *)
 begin
-    _ := SYSCALL(13, sig, 0, ADR(act), 8);              (* rt_sigaction *)
+    _ := SYSTEM.SYSCALL(13, sig, 0, SYSTEM.ADR(act), 8);              (* rt_sigaction *)
     return act[0] = 1;
 end;
 

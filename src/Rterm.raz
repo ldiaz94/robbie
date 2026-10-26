@@ -68,7 +68,7 @@ const
     (* the SGR parameters of each style, in the order of Style: the
        numbers between 'ESC [' and 'm'; each starts from 0, so no style
        leaks into the next *)
-    Looks: [11][]U8 = [
+    Looks: [11][]const U8 = [
         "0",        (* plain: as the terminal is set *)
         "0;1;7",    (* title: bold, in reverse *)
         "0;1",      (* heading: bold *)
@@ -146,7 +146,7 @@ begin
 end;
 
 (* The escape code of style s. *)
-proc look(s: Style): []U8;
+proc look(s: Style): []const U8;
 begin
     return Rbase.join(["\x1b[", Looks[INT(s)], "m"]);
 end;
