@@ -1,7 +1,7 @@
 # Robfile for robbie: build it, test it, install it.
 
 raz    = raz -Werror
-prefix = /usr/local
+prefix = /home/luis/.local
 pages  = doc/robbie.1 doc/robfile.5
 
 # The program itself.

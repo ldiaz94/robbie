@@ -48,6 +48,7 @@ around them become one space.
 .Ss Comments and descriptions
 A comment is a whole line, and never goes on to the next, even when it
 ends in a backslash.
+A comment may also end a variable's line, after a blank.
 A comment on the line just above a rule is that rule's description,
 which
 .Xr robbie 1
@@ -64,6 +65,20 @@ A name is a letter or underscore followed by letters, digits and
 underscores.
 The value is the rest of the line, less the blanks at either end, and
 may be empty.
+A
+.Ql #
+at the start of the value, or after a blank, begins a comment that ends
+the value, so
+.Ql inc = -I src   # note
+sets
+.Va inc
+to
+.Ql "-I src" ;
+a
+.Ql #
+joined to a word, as in
+.Ql a#b ,
+is part of the value.
 .Pp
 Placeholders in the value are filled in as the line is read, from the
 variables as they stand at that line, so
@@ -396,7 +411,7 @@ The robfile that builds robbie itself:
 # Robfile for robbie: build it, test it, install it.
 
 raz    = raz -Werror
-prefix = /usr/local
+prefix = /home/luis/.local
 pages  = doc/robbie.1 doc/robfile.5
 
 # The program itself.

@@ -251,14 +251,20 @@ end;
 (* Sets the variable on the line text, at w, whose '=' is at byte eq.
    The name is what comes before the '=', and must be a name that is
    not one of robbie's own placeholders; the value is the rest, with
-   blanks at either end removed and its placeholders filled in. *)
+   blanks at either end removed and its placeholders filled in. A '#'
+   at the start of the value, or after a blank, begins a comment that
+   ends the value. *)
 proc readVariable(w: Rbase.Where; text: []const U8; eq: INT);
-var k, v: INT; name: []const U8;
+var k, v, e: INT; name: []const U8;
 begin
     k := eq;
     while (k > 0) and Rbase.isBlank(text[k - 1]) do DEC(k); end;
     v := eq + 1;
     while (v < LEN(text)) and Rbase.isBlank(text[v]) do INC(v); end;
+    (* the value ends at a comment, or at the end of the line *)
+    e := v;
+    while (e < LEN(text)) and not ((text[e] = '#') and ((e = v) or Rbase.isBlank(text[e - 1]))) do INC(e); end;
+    while (e > v) and Rbase.isBlank(text[e - 1]) do DEC(e); end;
     name := text[0..k];
     if not Rbase.isName(name) then
         Rbase.fatal(w, ["'", name, "' is not a variable name"]);
@@ -266,7 +272,7 @@ begin
     if Rexpand.isOwnPlaceholder(name) then
         Rbase.fatal(w, ["'", name, "' is robbie's own placeholder, not a variable name"]);
     end;
-    Rexpand.setVar(name, Rexpand.expanded(w, text[v..LEN(text)]), false);
+    Rexpand.setVar(name, Rexpand.expanded(w, text[v..e]), false);
 end;
 
 (* Adds the rule whose first line is text, at w, with its colon at byte

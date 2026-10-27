@@ -3,7 +3,7 @@ $ robbie
 
  tasks
    test           Run the tests, then check the man pages.  ← build/robbie
-   install        Install into /usr/local.                  ← build/robbie
+   install        Install into /home/luis/.local.           ← build/robbie
    uninstall      Remove what install put there.
    clean          Remove everything the build made.
 
@@ -12,7 +12,7 @@ $ robbie
  ● robbie.tar.gz  A release tarball.                        ← build/robbie doc/…
 
  variables
-   raz = raz -Werror                     prefix = /usr/local
+   raz = raz -Werror                     prefix = /home/luis/.local
    pages = doc/robbie.1 doc/robfile.5
 exit 0
 $ robbie prefix=/opt

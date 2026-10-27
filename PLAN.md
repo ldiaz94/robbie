@@ -59,7 +59,7 @@ A whole robfile, showing every feature:
 # Build and test robbie.
 
 fpc = fpc -O2 -Xs
-prefix = /usr/local
+prefix = /home/luis/.local
 
 # The program itself.
 robbie: *.pas
@@ -186,7 +186,7 @@ when output is a pipe, so scripts and tests see plain text.
    build/*.o Object files for the library, one per source.
 
  variables
-   fpc = fpc -O2 -Xs      prefix = /usr/local
+   fpc = fpc -O2 -Xs      prefix = /home/luis/.local
 ```
 
 Names are bold, tasks and files each get their own colour, and inputs are

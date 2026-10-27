@@ -36,7 +36,7 @@ are out of date:
 
  tasks
    test           Run the tests, then check the man pages.  ← build/robbie
-   install        Install into /usr/local.                  ← build/robbie
+   install        Install into /home/luis/.local.           ← build/robbie
    uninstall      Remove what install put there.
    clean          Remove everything the build made.
 
@@ -45,7 +45,7 @@ are out of date:
  ● robbie.tar.gz  A release tarball.                        ← build/robbie doc/…
 
  variables
-   raz = raz -Werror                     prefix = /usr/local
+   raz = raz -Werror                     prefix = /home/luis/.local
    pages = doc/robbie.1 doc/robfile.5
 ```
 
@@ -60,7 +60,7 @@ This is robbie's own `Robfile`:
 # Robfile for robbie: build it, test it, install it.
 
 raz    = raz -Werror
-prefix = /usr/local
+prefix = /home/luis/.local
 pages  = doc/robbie.1 doc/robfile.5
 
 # The program itself.
@@ -101,6 +101,7 @@ task clean:
 Read it top to bottom and you have the whole format:
 
 - **A comment just above a rule is its description**, shown in the listing.
+- **A comment may end a variable's line** (`inc = -I src   # note`): a `#` at the start of the value or after a blank ends it.
 - **`name = value` is a variable**, and `{name}` fills it in anywhere: in
   a recipe, an input, a description, another variable.
 - **`target: inputs` is a rule.** Its target is made again when it is
@@ -157,7 +158,7 @@ built without it:
 
 ```sh
 make && make test
-make install                         # PREFIX=/usr/local; DESTDIR honoured
+make install                         # PREFIX=$(HOME)/.local; DESTDIR honoured
 ```
 
 Once it is built, `build/robbie test` and `build/robbie install` do the

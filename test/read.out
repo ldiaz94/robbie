@@ -35,6 +35,17 @@ list = a b c
 last = x
 exit 0
 --- Robfile
+ 1| inc = -I src   # note
+ 2| bare = x #
+ 3| hash = a#b
+ 4| only = # nothing
+$ robbie -p
+inc = -I src
+bare = x
+hash = a#b
+only =
+exit 0
+--- Robfile
  1| # The top of the file.
  2| 
  3| # Not a description: a blank line follows.
@@ -74,7 +85,7 @@ doc:
 exit 0
 $ robbie -p -C examples/robbie
 raz = raz -Werror
-prefix = /usr/local
+prefix = /home/luis/.local
 pages = doc/robbie.1 doc/robfile.5
 
 # The program itself.
@@ -95,7 +106,7 @@ task test: build/robbie
     out=$(groff -mdoc -ww -z {pages} 2>&1)
     test -z "$out" || { echo "$out"; exit 1; }
 
-# Install into /usr/local.
+# Install into /home/luis/.local.
 task install: build/robbie
     install -Dm755 build/robbie "$DESTDIR{prefix}/bin/robbie"
     install -Dm644 doc/robbie.1 "$DESTDIR{prefix}/share/man/man1/robbie.1"

@@ -18,7 +18,7 @@ says.
     make test       # test/*.sh against test/*.out, the pages through groff,
                     # then build/robbie's own test task
     make fmt        # src/ is laid out as raz's formatter lays it out
-    make install    # PREFIX=/usr/local, DESTDIR honoured
+    make install    # PREFIX=$(HOME)/.local, DESTDIR honoured
 
 `make test` and `make fmt` must pass before every commit. The tests run
 `build/robbie` through a pipe, so they see plain text; colour and the

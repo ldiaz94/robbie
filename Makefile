@@ -20,7 +20,7 @@ ifneq "$(word 2,$(shell $(RAZ) --version 2>/dev/null))" "$(RAZVERSION),"
 $(warning robbie is written for raz $(RAZVERSION), from $(RAZSITE); $(RAZ) is $(or $(shell $(RAZ) --version 2>/dev/null),not found))
 endif
 
-PREFIX ?= /usr/local
+PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man
 PAGES = doc/robbie.1 doc/robfile.5

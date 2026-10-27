@@ -41,6 +41,15 @@ run -p
 run -p cc=clang new=x 'flags=-O0 -g' empty=
 run -p cc=a cc=b
 
+# a trailing comment ends a value; a # inside a word does not
+robfile <<'EOF'
+inc = -I src   # note
+bare = x #
+hash = a#b
+only = # nothing
+EOF
+run -p
+
 # rules and recipes: which comment becomes a description, tabs and
 # spaces, and recipe lines keeping their backslashes for the shell
 robfile <<'EOF'
