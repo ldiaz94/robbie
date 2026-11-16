@@ -151,7 +151,7 @@ robbie -w test                       # test again whenever a source file changes
 
 ## Build and install
 
-robbie is written in [raz](https://raz.lucelad.workers.dev), a small
+robbie is written in [raz](https://raz.lucela.org), a small
 systems language, and builds with raz 0.18.0 and the C library (for
 `glob(3)` alone). robbie builds itself, but a Makefile is kept so it can be
 built without it:
