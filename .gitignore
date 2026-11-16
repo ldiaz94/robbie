@@ -1,2 +1,4 @@
 build/
 robbie.tar.gz
+# the owner's agent notes, local only; AGENTS.md is the shared part
+/CLAUDE.md

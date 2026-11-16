@@ -184,3 +184,11 @@ and it makes it.
 The mascot, also Robbie, is a Polish lowland sheepdog (*polski owczarek
 nizinny*): a herder by trade, which suits a program that rounds up what is
 out of date.
+
+## Contributing
+
+Defect reports are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) says how.
+
+## Licence
+
+ISC. See [LICENSE](LICENSE).
