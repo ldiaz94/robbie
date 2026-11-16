@@ -11,8 +11,7 @@ you, you answer for every line.
 ## What defines behaviour
 
 The manual pages, `doc/robbie.1` and `doc/robfile.5`, and `README.md`. A
-defect is robbie doing other than they say. `PLAN.md` holds the design
-notes.
+defect is robbie doing other than they say.
 
 ## Build and check
 

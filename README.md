@@ -170,8 +170,6 @@ same.
   interactive keys and the exit statuses: `man robbie`.
 - [`robfile(5)`](doc/robfile.5): the file, every feature, and a table for
   translating a Makefile: `man 5 robfile`.
-- [`PLAN.md`](PLAN.md): the design, a module at a time, and the roadmap,
-  which is for reading Makefiles as they are.
 - The source, in [`src/`](src/), is written to be read top to bottom: each
   module opens with what it does and why, and every procedure says what it
   takes and gives.
